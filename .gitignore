@@ -1,0 +1,22 @@
+# LaTeX build output
+build/
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.lof
+*.lot
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+
+# Editor/system files
+.vscode/*.log
+.DS_Store
+Thumbs.db
