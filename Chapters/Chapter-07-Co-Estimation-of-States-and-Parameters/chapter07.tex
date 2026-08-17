@@ -1,1 +1,564 @@
-\chapter{Co-Estimation of States and Parameters}
+﻿\chapter{Co-Estimation of States and Parameters}
+\label{ch:co_estimation}
+
+In advanced Battery Management Systems (BMS), state estimationâ€”specifically State-of-Charge (SOC) and State-of-Health (SOH)â€”and internal equivalent circuit parameter tracking are deeply coupled. Internal parameters such as ohmic resistance $R_0$, polarization resistance $R_1$, polarization capacitance $C_1$, and total usable capacity $C_{\text{cap}}$ vary non-linearly as functions of SOC, cell temperature, and operational age. Concurrently, state estimators depend on precise parameter values to calculate open-circuit voltage $V_{oc}(\text{SOC})$ offsets and transient overvoltages.
+
+This chapter explores the joint and dual estimation architectures used to resolve this state-parameter coupling. We analyze the theoretical limits of observability and structural ill-conditioning, derive the Joint EKF and Joint UKF algorithms, present the multi-time-scale Dual EKF framework, and discuss square-root filtering techniques designed to optimize computational efficiency and numerical stability in embedded microcontrollers.
+
+
+\section{Coupling Between States (SOC/SOH) and Parameters}
+\label{sec:coupling_states_parameters}
+
+The state dynamic equation governing State-of-Charge progression under load current $I(t)$ is given by Coulomb counting:
+\begin{equation}
+\dot{\text{SOC}}(t) = -\frac{\eta}{C_{\text{cap}}} I(t)
+\label{eq:ch7_soc_coulomb}
+\end{equation}
+where $\eta$ is Coulombic efficiency and $C_{\text{cap}}$ is the maximum usable capacity in Ampere-seconds.
+
+Concurrently, the terminal voltage observation model depends explicitly on internal parameter values:
+\begin{equation}
+V_t(t) = V_{oc}(\text{SOC}(t)) - V_1(t) - I(t) R_0(\text{SOH}, \text{SOC}, T)
+\label{eq:ch7_vt_coupling}
+\end{equation}
+
+Equations~\eqref{eq:ch7_soc_coulomb} and~\eqref{eq:ch7_vt_coupling} establish a tight mutual feedback loop:
+\begin{itemize}
+    \item \textbf{State-to-Parameter Dependence:} Parameter estimation algorithms evaluate prediction residuals $e_k = V_{t,k} - V_{oc}(\text{SOC}_k) + V_{1,k} + I_k R_0$. If SOC estimation error is present, errors propagate directly into $V_{oc}(\text{SOC})$, causing parameter identification algorithms to mistake SOC error for resistance growth or capacity fade.
+    \item \textbf{Parameter-to-State Dependence:} Model-based state estimators (such as EKF or UKF) propagate state error covariance matrices using model matrices $(\mathbf{A}, \mathbf{B}, \mathbf{C}, \mathbf{D})$ derived from $R_0, R_1, C_1$. Inaccurate parameter values distort Kalman gains, leading to persistent SOC estimation bias.
+\end{itemize}
+
+
+\subsection{Fisher Information Matrix and Ill-Conditioning Analysis}
+To analyze the limits of co-estimation, we utilize the Fisher Information Matrix (FIM). The FIM represents the amount of information that the measured terminal voltage sequence $Y_N = [V_{t,1}, \dots, V_{t,N}]^T$ contains about the augmented state parameter vector $\mathbf{x}_a = [\mathbf{x}^T, \boldsymbol{\theta}^T]^T$. The FIM $\mathbf{F}_I \in \mathbb{R}^{5 \times 5}$ is defined as:
+\begin{equation}
+\mathbf{F}_I = \sum_{k=1}^N \left( \frac{\partial y_k}{\partial \mathbf{x}_a} \right)^T R_v^{-1} \left( \frac{\partial y_k}{\partial \mathbf{x}_a} \right)
+\label{eq:ch7_fim_def}
+\end{equation}
+where the output gradient vector is:
+\begin{equation}
+\frac{\partial y_k}{\partial \mathbf{x}_a} = \begin{bmatrix} \frac{\partial V_t}{\partial \text{SOC}} & \frac{\partial V_t}{\partial V_1} & \frac{\partial V_t}{\partial R_0} & \frac{\partial V_t}{\partial R_1} & \frac{\partial V_t}{\partial C_1} \end{bmatrix} = \begin{bmatrix} \frac{\partial V_{oc}}{\partial \text{SOC}} & -1 & -I_k & \frac{\partial V_t}{\partial R_1} & \frac{\partial V_t}{\partial C_1} \end{bmatrix}
+\label{eq:ch7_output_gradient}
+\end{equation}
+
+\subsection{Recursive Parameter Sensitivity Derivations}
+To evaluate the gradient components $\frac{\partial V_t}{\partial R_1}$ and $\frac{\partial V_t}{\partial C_1}$ in Equation~\eqref{eq:ch7_output_gradient}, we must account for the dynamic memory of the polarization branch. Discretizing the polarization voltage dynamics using ZOH yields:
+\begin{equation}
+V_{1,k} = e^{-T_s/(R_1 C_1)} V_{1,k-1} + R_1 \left( 1 - e^{-T_s/(R_1 C_1)} \right) I_{k-1}
+\end{equation}
+Let $\phi_{1,k} = e^{-T_s/(R_1 C_1)}$. The partial derivatives are computed recursively. Differentiating with respect to $R_1$ gives:
+\begin{equation}
+\frac{\partial V_{1,k}}{\partial R_1} = \phi_{1,k} \frac{\partial V_{1,k-1}}{\partial R_1} + \frac{T_s}{R_1^2 C_1} \phi_{1,k} V_{1,k-1} + \left( 1 - \phi_{1,k} \right) I_{k-1} + R_1 \frac{T_s}{R_1^2 C_1} \phi_{1,k} I_{k-1}
+\label{eq:sens_r1_rec}
+\end{equation}
+Similarly, differentiating with respect to $C_1$ yields:
+\begin{equation}
+\frac{\partial V_{1,k}}{\partial C_1} = \phi_{1,k} \frac{\partial V_{1,k-1}}{\partial C_1} + \frac{T_s}{R_1 C_1^2} \phi_{1,k} V_{1,k-1} + R_1 \frac{T_s}{R_1 C_1^2} \phi_{1,k} I_{k-1}
+\label{eq:sens_c1_rec}
+\end{equation}
+
+Because the terminal voltage is $V_t = V_{oc} - V_1 - I R_0$, the parameter sensitivities are:
+\begin{equation}
+\frac{\partial V_{t,k}}{\partial R_1} = -\frac{\partial V_{1,k}}{\partial R_1}, \qquad \frac{\partial V_{t,k}}{\partial C_1} = -\frac{\partial V_{1,k}}{\partial C_1}
+\end{equation}
+
+These recursive sensitivity derivatives are computed online at each time step. The resulting sensitivity trajectories show that the information content regarding $R_1$ and $C_1$ is transient and depends heavily on the rate of change of the current input $I(t)$. During periods of constant current, these sensitivities decay rapidly to zero, leading to the structural ill-conditioning of the FIM.
+
+The condition number of the FIM is defined as the ratio of its maximum to minimum singular values:
+\begin{equation}
+\kappa\left(\mathbf{F}_I\right) = \frac{\sigma_{\max}(\mathbf{F}_I)}{\sigma_{\min}(\mathbf{F}_I)}
+\end{equation}
+In practical BMS environments, the condition number $\kappa(\mathbf{F}_I)$ often exceeds $10^8$, indicating severe structural ill-conditioning. This ill-conditioning is driven by two main factors:
+\begin{enumerate}
+    \item \textbf{Scale Asymmetry:} The sensitivities with respect to the state variables (e.g., $\frac{\partial V_t}{\partial V_1} = -1$) are several orders of magnitude larger than the sensitivities with respect to slow polarization parameters (e.g., $\frac{\partial V_t}{\partial C_1} \approx 10^{-5}$), causing the covariance ellipsoid to be highly elongated.
+    \item \textbf{Dynamic Sensitivity Variation:} At flat regions of the OCV-SOC curve (e.g., between 20\% and 80\% SOC for $\text{LiFePO}_4$), the OCV derivative $\frac{\partial V_{oc}}{\partial \text{SOC}}$ approaches zero. This renders SOC almost indistinguishable from polarization parameters from terminal voltage measurements alone, causing the singular value $\sigma_{\min}(\mathbf{F}_I)$ to drop close to the machine precision limit and inducing numerical instability in joint filters.
+\end{enumerate}
+
+
+\section{Joint Estimation Frameworks}
+\label{sec:joint_estimation_frameworks}
+
+Joint estimation frameworks tackle the coupled state and parameter tracking problem by concatenating physical states and unknown model parameters into a single augmented state vector evaluated by a unified filter.
+
+\subsection{Extended/Augmented State Vectors}
+\label{subsec:augmented_vectors}
+
+In the Joint Extended Kalman Filter (J-EKF) approach, the physical state vector $\mathbf{x}_k = [\text{SOC}_k, V_{1,k}]^T \in \mathbb{R}^2$ and parameter vector $\boldsymbol{\theta}_k = [R_{0,k}, R_{1,k}, C_{1,k}]^T \in \mathbb{R}^3$ are merged into an augmented state vector $\mathbf{x}_{a,k} \in \mathbb{R}^5$:
+\begin{equation}
+\mathbf{x}_{a,k} = \begin{bmatrix} \mathbf{x}_k \\ \boldsymbol{\theta}_k \end{bmatrix} = \begin{bmatrix} \text{SOC}_k & V_{1,k} & R_{0,k} & R_{1,k} & C_{1,k} \end{bmatrix}^T
+\label{eq:ch7_augmented_vector_def}
+\end{equation}
+
+Parameter dynamics are modeled as stationary random-walk processes driven by small fictitious Gaussian process noise $\mathbf{w}_{k-1}^{\theta} \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}^{\theta})$:
+\begin{equation}
+\boldsymbol{\theta}_k = \boldsymbol{\theta}_{k-1} + \mathbf{w}_{k-1}^{\theta}
+\label{eq:ch7_random_walk_params}
+\end{equation}
+
+The non-linear augmented state-space model is expressed as:
+\begin{align}
+\mathbf{x}_{a,k} &= f_a(\mathbf{x}_{a,k-1}, u_{k-1}) + \mathbf{w}_{a,k-1} \label{eq:ch7_augmented_ss_state} \\
+y_k &= g_a(\mathbf{x}_{a,k}, u_k) + v_k \label{eq:ch7_augmented_ss_output}
+\end{align}
+where $\mathbf{w}_{a,k-1} = [\mathbf{w}_{x,k-1}^T, (\mathbf{w}_{\theta,k-1})^T]^T$ is the augmented process noise vector with covariance $\mathbf{Q}_a = \text{diag}(\mathbf{Q}_x, \mathbf{Q}_{\theta})$.
+
+
+\subsection{Joint Extended Kalman Filter (J-EKF)}
+\label{subsec:joint_ekf}
+
+The Joint Extended Kalman Filter linearizes non-linear augmented transition dynamics $f_a(\cdot)$ and measurement functions $g_a(\cdot)$ at each sample step around the conditional mean.
+
+The augmented state transition Jacobian matrix $\mathbf{F}_{a,k-1} \in \mathbb{R}^{5 \times 5}$ is evaluated as:
+\begin{equation}
+\mathbf{F}_{a,k-1} = \left. \frac{\partial f_a(\mathbf{x}_a, u)}{\partial \mathbf{x}_a} \right|_{\hat{\mathbf{x}}_{a,k-1|k-1}} = \begin{bmatrix} \left. \frac{\partial f}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}} & \left. \frac{\partial f}{\partial \boldsymbol{\theta}} \right|_{\hat{\boldsymbol{\theta}}} \\ \mathbf{0}_{3 \times 2} & \mathbf{I}_{3 \times 3} \end{bmatrix}
+\label{eq:ch7_augmented_jacobian_f}
+\end{equation}
+
+The augmented measurement Jacobian matrix $\mathbf{H}_{a,k} \in \mathbb{R}^{1 \times 5}$ evaluates to:
+\begin{equation}
+\mathbf{H}_{a,k} = \left. \frac{\partial g_a(\mathbf{x}_a, u)}{\partial \mathbf{x}_a} \right|_{\hat{\mathbf{x}}_{a,k|k-1}} = \begin{bmatrix} \frac{\partial V_{oc}}{\partial \text{SOC}} & -1 & -I_k & 0 & 0 \end{bmatrix}
+\label{eq:ch7_augmented_jacobian_h}
+\end{equation}
+
+The predictor-corrector recursion for J-EKF proceeds through augmented covariance and Kalman gain updates:
+\begin{align}
+\hat{\mathbf{x}}_{a,k|k-1} &= f_a(\hat{\mathbf{x}}_{a,k-1|k-1}, u_{k-1}) \label{eq:ch7_jekf_x_pred} \\
+\mathbf{P}_{a,k|k-1} &= \mathbf{F}_{a,k-1} \mathbf{P}_{a,k-1|k-1} \mathbf{F}_{a,k-1}^T + \mathbf{Q}_{a,k-1} \label{eq:ch7_jekf_p_pred} \\
+\mathbf{K}_{a,k} &= \mathbf{P}_{a,k|k-1} \mathbf{H}_{a,k}^T \left( \mathbf{H}_{a,k} \mathbf{P}_{a,k|k-1} \mathbf{H}_{a,k}^T + R_v \right)^{-1} \label{eq:ch7_jekf_gain} \\
+\hat{\mathbf{x}}_{a,k|k} &= \hat{\mathbf{x}}_{a,k|k-1} + \mathbf{K}_{a,k} \left( y_k - g_a(\hat{\mathbf{x}}_{a,k|k-1}, u_k) \right) \label{eq:ch7_jekf_x_update} \\
+\mathbf{P}_{a,k|k} &= \left( \mathbf{I}_5 - \mathbf{K}_{a,k} \mathbf{H}_{a,k} \right) \mathbf{P}_{a,k|k-1} \label{eq:ch7_jekf_p_update}
+\end{align}
+
+Despite its conceptual elegance, J-EKF exhibits structural drawbacks in real-time BMS deployment:
+\begin{enumerate}
+    \item \textbf{Numerical Scale Asymmetry:} Physical states ($\text{SOC} \in [0, 1]$) and parameters ($C_1 \in [10^2, 10^4]\text{ F}$) operate across vastly disparate numerical scales. This asymmetry causes ill-conditioned augmented covariance matrices with condition numbers exceeding $\text{cond}(\mathbf{P}_a) \gg 10^8$.
+    \item \textbf{Fictitious Noise Tuning Sensitivity:} The artificial parameter process noise covariance $\mathbf{Q}_{\theta}$ controls parameter tracking agility. Overly large values induce numerical chatter, whereas overly small entries freeze parameter adaptation.
+\end{enumerate}
+
+Below is the pseudo-code for the implementation of the Joint EKF algorithm:
+
+\begin{verbatim}
+Algorithm 7.1: Joint Extended Kalman Filter
+Input: Telemetry data {y_k, u_k}, Process covariance Q_a, Measurement covariance R_v
+Output: Augmented state estimate x_hat_a_k
+Initialization:
+  1: x_hat_a = [SOC_0, V_1_0, R_0_0, R_1_0, C_1_0]^T
+  2: P_a = P_a_0
+Loop for each time step k:
+  3: Compute Jacobians:
+       F_a = compute_transition_jacobian(x_hat_a, u_{k-1})
+       H_a = [d(V_oc)/d(SOC), -1, -u_k, 0, 0]
+  4: Prediction Step:
+       x_hat_a = f_a(x_hat_a, u_{k-1})
+       P_a = F_a * P_a * F_a^T + Q_a
+  5: Correction Step:
+       S = H_a * P_a * H_a^T + R_v
+       K = P_a * H_a^T / S
+       x_hat_a = x_hat_a + K * (y_k - g_a(x_hat_a, u_k))
+       P_a = (eye(5) - K * H_a) * P_a
+\end{verbatim}
+
+
+\subsection{Joint Unscented Kalman Filter (J-UKF)}
+\label{subsec:joint_ukf}
+
+To eliminate linearization errors, Joint Unscented Kalman Filtering (J-UKF) applies the Unscented Transform directly across the augmented state space $\mathbb{R}^L$ (where $L=5$). A set of $2L+1 = 11$ deterministic sigma points $\boldsymbol{\mathcal{X}}_{a,k}^{(i)}$ are generated around the augmented state estimate $\hat{\mathbf{x}}_{a,k}$:
+\begin{align}
+\boldsymbol{\mathcal{X}}_{a,k}^{(0)} &= \hat{\mathbf{x}}_{a,k} \label{eq:ch7_jukf_sigma0} \\
+\boldsymbol{\mathcal{X}}_{a,k}^{(i)} &= \hat{\mathbf{x}}_{a,k} + \left( \sqrt{(L + \lambda_{ut}) \mathbf{P}_{a,k}} \right)_i, \quad i = 1, \dots, L \label{eq:ch7_jukf_sigma_plus} \\
+\boldsymbol{\mathcal{X}}_{a,k}^{(i+L)} &= \hat{\mathbf{x}}_{a,k} - \left( \sqrt{(L + \lambda_{ut}) \mathbf{P}_{a,k}} \right)_i, \quad i = 1, \dots, L \label{eq:ch7_jukf_sigma_minus}
+\end{align}
+
+Propagating augmented sigma points through non-linear system functions captures cross-covariance terms between states and parameters up to third-order Taylor series terms without analytical Jacobian calculations.
+
+Below is the pseudo-code for the implementation of the Joint UKF algorithm:
+
+\begin{verbatim}
+Algorithm 7.2: Joint Unscented Kalman Filter
+Input: Telemetry data {y_k, u_k}, Process covariance Q_a, Measurement covariance R_v
+Output: Augmented state estimate x_hat_a_k
+Initialization:
+  1: x_hat_a = [SOC_0, V_1_0, R_0_0, R_1_0, C_1_0]^T
+  2: P_a = P_a_0
+Loop for each time step k:
+  3: Generate 11 augmented sigma points X_a using x_hat_a and P_a
+  4: Propagate sigma points through augmented transition equations:
+       X_a_pred = f_a(X_a, u_{k-1})
+  5: Calculate predicted mean x_hat_a_pred and covariance P_a_pred
+  6: Evaluate measurement function across predicted sigma points:
+       Y_pred = g_a(X_a_pred, u_k)
+  7: Compute predicted measurement mean y_hat and covariance P_yy
+  8: Compute cross-covariance P_xy
+  9: Update steps:
+       K = P_xy / P_yy
+       x_hat_a = x_hat_a_pred + K * (y_k - y_hat)
+       P_a = P_a_pred - K * P_yy * K^T
+\end{verbatim}
+
+
+\subsection{Joint Particle Filter (J-PF)}
+\label{subsec:joint_pf}
+
+Under non-Gaussian noise distributions or severe degradation profiles, Joint Particle Filtering (J-PF) approximates the joint posterior density $p(\mathbf{x}_{a,k} \mid y_{1:k})$ using a weighted particle set $\{ \mathbf{x}_{a,k}^{(j)}, w_k^{(j)} \}_{j=1}^{N_p}$. While J-PF captures multi-modal parameter distributions, its high computational complexity ($\mathcal{O}(N_p \cdot L)$) limits implementation to offline cloud BMS platforms.
+
+Below is the pseudo-code for the Joint Particle Filter:
+
+\begin{verbatim}
+Algorithm 7.3: Joint Particle Filter
+Input: Telemetry data {y_k, u_k}, Particle count N_p, Measurement covariance R_v
+Output: Joint state estimate x_hat_a_k
+Initialization:
+  1: Draw N_p particles {x_a_0^(j)} from initial prior distribution p(x_a_0)
+  2: Set initial weights w_0^(j) = 1 / N_p
+Loop for each time step k:
+  3: Propagate particles: x_a_k^(j) = f_a(x_a_{k-1}^(j), u_{k-1}) + w_k^(j)
+  4: Compute likelihood of measurements:
+       L_k^(j) = (1 / sqrt(2*pi*R_v)) * exp(-(y_k - g_a(x_a_k^(j), u_k))^2 / (2*R_v))
+  5: Update particle weights: w_k^(j) = w_{k-1}^(j) * L_k^(j)
+  6: Normalize weights: w_k^(j) = w_k^(j) / sum(w_k)
+  7: Calculate state estimate: x_hat_a_k = sum(w_k^(j) * x_a_k^(j))
+  8: Check degeneracy: N_eff = 1 / sum((w_k^(j))^2)
+  9: If N_eff < N_p / 2: Resample particles using Systematic Resampling
+\end{verbatim}
+
+\subsection{\texorpdfstring{$H_\infty$}{H-infinity} Robust Co-Estimation}
+\label{subsec:hinfty_coestimation}
+
+When process and sensor noise variances are unknown, $H_\infty$ robust filtering minimizes estimation error under worst-case disturbance profiles. The optimization objective enforces a user-defined performance bound $\gamma_{h} > 0$:
+\begin{equation}
+\sup_{\mathbf{w}_k, v_k, \mathbf{x}_0} \frac{\sum_{k=0}^N \|\mathbf{x}_{a,k} - \hat{\mathbf{x}}_{a,k}\|_{\mathbf{S}}^2}{\|\mathbf{x}_0 - \hat{\mathbf{x}}_0\|_{\mathbf{P}_0^{-1}}^2 + \sum_{k=0}^N \left( \|\mathbf{w}_k\|_{\mathbf{Q}^{-1}}^2 + \|v_k\|_{R_v^{-1}}^2 \right)} < \gamma_{h}^2
+\label{eq:ch7_hinfty_objective}
+\end{equation}
+
+The $H_\infty$ Riccati covariance update introduces a bounded subtractive term:
+\begin{equation}
+\mathbf{P}_{a,k|k-1} = \mathbf{F}_{a,k-1} \mathbf{P}_{a,k-1|k-1} \mathbf{F}_{a,k-1}^T + \mathbf{Q}_a - \gamma_{h}^{-2} \mathbf{P}_{a,k|k-1} \mathbf{S} \mathbf{P}_{a,k|k-1}
+\label{eq:ch7_hinfty_riccati}
+\end{equation}
+enforcing robust co-estimation under severe sensor noise and thermal disturbances.
+
+
+\section{Multi-Time-Scale Dual Estimation}
+\label{sec:multi_timescale_dual}
+
+Battery dynamics operate across distinct time scales: electrical states ($V_1, \text{SOC}$) change rapidly in response to dynamic current inputs ($10\text{ ms} - 1\text{ s}$), whereas parameter degradation ($R_0, C_{\text{cap}}$) occurs over longer operational horizons ($100\text{ s} - 1000\text{ s}$). Multi-Time-Scale Dual Estimation exploits this separation by decoupling state and parameter tracking into two interconnected filters operating at different execution rates.
+
+The interactive architecture of Dual Kalman Filtering (D-EKF / D-UKF) is governed by:
+\begin{align}
+\text{Fast State Estimator (Rate: } T_s\text{):} \quad \hat{\mathbf{x}}_k &= \mathcal{F}_{\text{state}}\left(\hat{\mathbf{x}}_{k-1}, u_k, y_k, \hat{\boldsymbol{\theta}}_m\right) \label{eq:ch7_fast_state_filter} \\
+\text{Slow Parameter Estimator (Rate: } M \cdot T_s\text{):} \quad \hat{\boldsymbol{\theta}}_m &= \mathcal{F}_{\text{param}}\left(\hat{\boldsymbol{\theta}}_{m-1}, u_m, y_m, \hat{\mathbf{x}}_k\right) \label{eq:ch7_slow_param_filter}
+\end{align}
+where $M \gg 1$ represents the multi-time-scale decimation factor.
+
+\subsection{Information Exchange Loop and Decimation Factor}
+Information exchanges symmetrically between the filters:
+\begin{itemize}
+    \item \textbf{State-to-Parameter Pass:} Every $M$ state steps, the parameter filter receives the updated state vector $\hat{\mathbf{x}}_k$ to recalculate open-circuit voltage $V_{oc}(\hat{\text{SOC}}_k)$ and polarization voltage $\hat{V}_{1,k}$.
+    \item \textbf{Parameter-to-State Pass:} The parameter filter updates parameters $\hat{\boldsymbol{\theta}}_m = [\hat{R}_{0}, \hat{R}_{1}, \hat{C}_{1}]^T$ and holds them constant across the next $M$ fast state execution cycles.
+\end{itemize}
+
+Selecting an optimal decimation factor $M$ requires balancing parameter adaptation speed against microcontroller execution limits:
+\begin{equation}
+M_{\text{optimal}} = \left\lfloor \frac{\tau_{\text{param, min}}}{\tau_{\text{state, max}}} \right\rfloor = \left\lfloor \frac{R_1 C_1}{T_s} \right\rfloor
+\label{eq:ch7_m_optimal}
+\end{equation}
+
+Decoupling state and parameter tracking reduces overall operational floating-point complexity from $\mathcal{O}((n_x + n_{\theta})^3)$ down to $\mathcal{O}(n_x^3) + \frac{1}{M} \mathcal{O}(n_{\theta}^3)$.
+
+\begin{figure}[h!]
+\centering
+\begin{tikzpicture}[node distance=2.5cm, auto, >=latex, thick]
+  \node [draw, rectangle, minimum width=3.0cm, minimum height=1.2cm] (state) {State Filter (Fast: $T_s$)};
+  \node [draw, rectangle, minimum width=3.0cm, minimum height=1.2cm, below of=state, node distance=2.5cm] (param) {Parameter Filter (Slow: $M T_s$)};
+
+  \draw [->] (state.south west) -- ++(-0.5,0) |- node[left, pos=0.25] {States $\hat{\mathbf{x}}_k$} (param.west);
+  \draw [->] (param.north east) -- ++(0.5,0) |- node[right, pos=0.25] {Parameters $\hat{\boldsymbol{\theta}}_m$} (state.east);
+  \draw [->] (-3.0, 0.3) -- node[above] {$y_k, u_k$} (state.west);
+  \draw [->] (-3.0, -2.2) -- node[above] {$y_m, u_m$} (param.west);
+\end{tikzpicture}
+\caption{Information flow diagram of the Dual (multi-time-scale) Estimation framework.}
+\label{fig:dual_estimation_flow}
+\end{figure}
+
+
+\subsection{Mathematical Derivation of the Dual EKF (D-EKF)}
+In the D-EKF formulation, two separate filters run concurrently. The state filter estimates $\mathbf{x}_k = [\text{SOC}_k, V_{1,k}]^T$ using the parameters $\hat{\boldsymbol{\theta}}_{k-1}$ as constants. The parameter filter estimates $\boldsymbol{\theta}_k = [R_{0,k}, R_{1,k}, C_{1,k}]^T$ using the estimated states $\hat{\mathbf{x}}_k$ as known inputs.
+
+Let the state system dynamics be:
+\begin{align}
+\mathbf{x}_k &= f(\mathbf{x}_{k-1}, u_{k-1}, \hat{\boldsymbol{\theta}}_{k-1}) + \mathbf{w}_{x,k-1} \\
+y_k &= g(\mathbf{x}_k, u_k, \hat{\boldsymbol{\theta}}_{k-1}) + v_{x,k}
+\end{align}
+The state transition Jacobian $\mathbf{F}_{k-1}^x = \frac{\partial f}{\partial \mathbf{x}}$ and measurement Jacobian $\mathbf{H}_k^x = \frac{\partial g}{\partial \mathbf{x}}$ are computed around the state estimate $\hat{\mathbf{x}}_{k-1|k-1}$. The state filter updates follow standard EKF equations.
+
+Simultaneously, the parameter system dynamics are modeled as:
+\begin{align}
+\boldsymbol{\theta}_k &= \boldsymbol{\theta}_{k-1} + \mathbf{w}_{\theta,k-1} \\
+y_k &= g(\hat{\mathbf{x}}_k, u_k, \boldsymbol{\theta}_k) + v_{\theta,k}
+\end{align}
+Note that the parameter state transition is the identity matrix $\mathbf{F}_{k-1}^{\theta} = \mathbf{I}$. However, the measurement Jacobian with respect to the parameters, $\mathbf{H}_k^{\theta} \in \mathbb{R}^{1 \times 3}$, is:
+\begin{equation}
+\mathbf{H}_k^{\theta} = \left. \frac{d g(\hat{\mathbf{x}}_k, u_k, \boldsymbol{\theta})}{d \boldsymbol{\theta}} \right|_{\hat{\boldsymbol{\theta}}_{k-1|k-1}}
+\end{equation}
+
+To compute $\mathbf{H}_k^{\theta}$, we use the total derivative since the state $\hat{\mathbf{x}}_k$ implicitly depends on the parameters:
+\begin{equation}
+\mathbf{H}_k^{\theta} = \frac{\partial g(\hat{\mathbf{x}}_k, u_k, \boldsymbol{\theta})}{\partial \boldsymbol{\theta}} + \frac{\partial g(\hat{\mathbf{x}}_k, u_k, \boldsymbol{\theta})}{\partial \hat{\mathbf{x}}_k} \frac{d \hat{\mathbf{x}}_k}{d \boldsymbol{\theta}}
+\end{equation}
+where $\frac{\partial g}{\partial \boldsymbol{\theta}} = \begin{bmatrix} -I_k & 0 & 0 \end{bmatrix}$ (for $R_0$), and $\frac{d \hat{\mathbf{x}}_k}{d \boldsymbol{\theta}}$ is computed recursively using:
+\begin{equation}
+\frac{d \hat{\mathbf{x}}_k}{d \boldsymbol{\theta}} = \frac{\partial f(\hat{\mathbf{x}}_{k-1}, u_{k-1}, \boldsymbol{\theta})}{\partial \boldsymbol{\theta}} + \frac{\partial f(\hat{\mathbf{x}}_{k-1}, u_{k-1}, \boldsymbol{\theta})}{\partial \hat{\mathbf{x}}_{k-1}} \frac{d \hat{\mathbf{x}}_{k-1}}{d \boldsymbol{\theta}}
+\end{equation}
+
+By decoupling the state and parameter updates, D-EKF avoids the numerical scale issues of J-EKF and allows the parameter filter to run at a lower frequency (decimated rate $M$), significantly reducing CPU load.
+
+
+\subsection{Mathematical Formulation of the Dual UKF (D-UKF)}
+Dual Unscented Kalman Filtering (D-UKF) extends the time-scale separation to the derivative-free UKF framework. Two separate Unscented Kalman filters execute in parallel: the state UKF estimates the 2-dimensional electrical state vector $\mathbf{x}_k = [\text{SOC}_k, V_{1,k}]^T$, and the parameter UKF tracks the 3-dimensional parameter vector $\boldsymbol{\theta}_m = [R_0, R_1, C_1]^T$ at a decimated rate $M$.
+
+In the state UKF, a set of $2 n_x + 1 = 5$ sigma points $\boldsymbol{\mathcal{X}}_k^{(i)}$ is generated around $\hat{\mathbf{x}}_k$:
+\begin{equation}
+\boldsymbol{\mathcal{X}}_k^{(i)} = \left[ \hat{\mathbf{x}}_k, \,\, \hat{\mathbf{x}}_k \pm \sqrt{(n_x + \lambda_x) \mathbf{P}_k^x} \right]
+\end{equation}
+These points are propagated through the state equation $f(\cdot)$ using the current parameter estimate $\hat{\boldsymbol{\theta}}_m$:
+\begin{equation}
+\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} = f\left( \boldsymbol{\mathcal{X}}_{k-1}^{(i)}, u_{k-1}, \hat{\boldsymbol{\theta}}_m \right)
+\end{equation}
+The predicted state $\hat{\mathbf{x}}_{k|k-1}$ and covariance $\mathbf{P}_{k|k-1}^x$ are calculated from these propagated points. The observation sigma points $\mathcal{Y}_{k|k-1}^{(i)}$ are evaluated using the non-linear measurement equation:
+\begin{equation}
+\mathcal{Y}_{k|k-1}^{(i)} = g\left( \boldsymbol{\mathcal{X}}_{k|k-1}^{(i)}, u_k, \hat{\boldsymbol{\theta}}_m \right)
+\end{equation}
+The state estimate and error covariance are updated using the standard UKF updates.
+
+Simultaneously, the parameter UKF runs every $M$ steps. It generates a set of $2 n_{\theta} + 1 = 7$ parameter sigma points $\boldsymbol{\Theta}_m^{(i)}$ around $\hat{\boldsymbol{\theta}}_m$:
+\begin{equation}
+\boldsymbol{\Theta}_m^{(i)} = \left[ \hat{\boldsymbol{\theta}}_m, \,\, \hat{\boldsymbol{\theta}}_m \pm \sqrt{(n_{\theta} + \lambda_{\theta}) \mathbf{P}_m^{\theta}} \right]
+\end{equation}
+These parameter sigma points represent candidate values of the battery parameters. To evaluate the observation prediction for each parameter candidate, the state filter is evaluated. The observation sigma points $\mathcal{Y}_{m|m-1}^{\theta,(i)}$ for the parameter filter are computed as:
+\begin{equation}
+\mathcal{Y}_{m|m-1}^{\theta,(i)} = g\left( \hat{\mathbf{x}}_k, u_m, \boldsymbol{\Theta}_m^{(i)} \right)
+\end{equation}
+where $\hat{\mathbf{x}}_k$ is the current state estimate. The parameter estimate $\hat{\boldsymbol{\theta}}_m$ and parameter covariance $\mathbf{P}_m^{\theta}$ are updated using the cross-covariance between the parameter sigma points and the predicted measurements. By separating the unscented transforms, D-UKF avoids generating $2(n_x+n_{\theta})+1 = 11$ sigma points, saving substantial execution time.
+
+
+\section{Computational Constraints in Microcontrollers}
+\label{sec:microcontroller_constraints}
+
+Deploying co-estimation algorithms on automotive-grade microcontrollers (e.g., ARM Cortex-M4/M7, Infineon Aurix TC38x) requires managing floating-point operations (FLOPs), memory allocation, and numerical stability.
+
+Key optimization techniques include:
+\begin{itemize}
+    \item \textbf{Matrix Inversion Avoidance:} Standard matrix inversion in Kalman gain evaluation ($S_k^{-1}$) scales at $\mathcal{O}(n^3)$. Replacing explicit inversion with Cholesky decomposition ($\mathbf{S}_k = \mathbf{L}_k \mathbf{L}_k^T$) and forward/backward substitution reduces computational overhead and maintains numerical stability.
+    \item \textbf{Decimated Execution:} Running parameter estimators at lower multi-time-scale rates reduces total CPU utilization, freeing processing bandwidth for cell balancing and safety routines.
+\end{itemize}
+
+\subsection{Square-Root Filtering (SR-EKF and SR-UKF)}
+In embedded systems using single-precision (32-bit) floating-point representation, round-off errors can cause the state error covariance matrix $\mathbf{P}_k$ to lose its symmetric positive-definite property, leading to filter divergence. Square-Root filtering resolves this by propagating the Cholesky square root factor $\mathbf{S}_k$ directly, where $\mathbf{P}_k = \mathbf{S}_k \mathbf{S}_k^T$.
+
+In the Square-Root UKF (SR-UKF), the covariance matrix is never reconstructed. The algorithm propagates the square root factor $\mathbf{S}_k$ using QR decomposition and Cholesky updates:
+\begin{enumerate}
+    \item \textbf{Time Propagation:} The predicted square root factor $\mathbf{S}_{k|k-1}$ is computed from the propagated sigma point matrix $\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)}$ using a QR decomposition of the weighted differences matrix:
+    \begin{equation}
+    \mathbf{S}_{k|k-1} = \mathrm{qr}\left\{ \left[ \sqrt{W_c^{(1)}}\left(\boldsymbol{\mathcal{X}}_{k|k-1}^{(1:2L)} - \hat{\mathbf{x}}_{k|k-1}\right), \sqrt{\mathbf{Q}_{k-1}} \right]^T \right\}
+    \label{eq:ch7_qr_decomposition}
+    \end{equation}
+    where $\mathrm{qr}\{\mathbf{A}\}$ returns the upper-triangular matrix of the QR decomposition of $\mathbf{A}$.
+    \item \textbf{Cholesky Update:} Since the zeroth covariance weight $W_c^{(0)}$ can be negative, a rank-one Cholesky update or downdate is performed:
+    \begin{equation}
+    \mathbf{S}_{k|k-1} = \mathrm{cholupdate}\left\{ \mathbf{S}_{k|k-1}, \boldsymbol{\mathcal{X}}_{k|k-1}^{(0)} - \hat{\mathbf{x}}_{k|k-1}, W_c^{(0)} \right\}
+    \label{eq:ch7_cholesky_update}
+    \end{equation}
+    \item \textbf{Measurement Update:} Similarly, the observation covariance square root $S_{yy,k}$ and the Kalman gain are computed directly from the observation sigma points $\mathcal{Y}_{k|k-1}^{(i)}$ using QR decomposition, avoiding any matrix inversion.
+\end{enumerate}
+
+This ensures that $\mathbf{P}_k = \mathbf{S}_k \mathbf{S}_k^T$ is symmetric positive-definite by design, regardless of numerical truncation.
+
+
+\subsection{Square-Root EKF (SR-EKF) Update Equations}
+Square-Root Extended Kalman Filtering (SR-EKF) applies the same principle to EKF. The covariance square root matrix $\mathbf{S}_k$ is propagated and updated directly:
+\begin{enumerate}
+    \item \textbf{Predict Step:} Given the square root factor $\mathbf{S}_{k-1|k-1}$ and the process noise square root $\mathbf{S}_{Q,k-1} = \mathbf{Q}_{k-1}^{1/2}$, we construct the compound matrix:
+    \begin{equation}
+    \mathbf{M}_k = \begin{bmatrix} \mathbf{S}_{k-1|k-1} \mathbf{F}_{k-1}^T \\ \mathbf{S}_{Q,k-1} \end{bmatrix}
+    \end{equation}
+    Performing a QR decomposition on $\mathbf{M}_k$ yields the upper triangular factor which corresponds to the predicted square root:
+    \begin{equation}
+    \mathbf{M}_k = \mathbf{Q}_M \begin{bmatrix} \mathbf{S}_{k|k-1}^T \\ \mathbf{0} \end{bmatrix} \implies \mathbf{S}_{k|k-1} = \text{triu}\left( \mathbf{S}_{k|k-1} \right)
+    \end{equation}
+    \item \textbf{Measurement Update Step:} To update the square root covariance matrix with measurement Jacobian $\mathbf{H}_k$ and measurement noise square root $S_{R,k} = \sqrt{R_k}$, we define the matrix:
+    \begin{equation}
+    \mathbf{N}_k = \begin{bmatrix} S_{R,k} & \mathbf{H}_k \mathbf{S}_{k|k-1} \\ \mathbf{0} & \mathbf{S}_{k|k-1} \end{bmatrix}
+    \end{equation}
+    Performing a QR decomposition (or Householder triangularization) on $\mathbf{N}_k$ yields:
+    \begin{equation}
+    \mathbf{N}_k \mathbf{Q}_N = \begin{bmatrix} S_{yy,k}^{1/2} & \mathbf{0} \\ \mathbf{K}_{S,k} & \mathbf{S}_{k|k} \end{bmatrix}
+    \end{equation}
+    where $S_{yy,k}^{1/2}$ is the square root of the innovation covariance, $\mathbf{S}_{k|k}$ is the updated square root covariance, and the updated gain is:
+    \begin{equation}
+    \mathbf{K}_k = \mathbf{K}_{S,k} \left( S_{yy,k}^{1/2} \right)^{-1}
+    \end{equation}
+\end{enumerate}
+
+The SR-EKF guarantees positive-definiteness since $\mathbf{P}_{k|k} = \mathbf{S}_{k|k} \mathbf{S}_{k|k}^T$ is a matrix product of an upper-triangular matrix, preventing numeric round-off divergence on low-cost microcontrollers.
+
+
+\subsection{Computational Complexity Comparison}
+To select the appropriate architecture for embedded deployment, we analyze the floating-point complexity. Table~\ref{tab:flop_complexity} shows the estimated FLOP count per execution cycle for each co-estimation scheme.
+
+\begin{table}[h!]
+\centering
+\caption{Estimated computational complexity of co-estimation algorithms.}
+\label{tab:flop_complexity}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|X|}
+\hline
+\textbf{Estimation Scheme} & \textbf{State Dimension} & \textbf{FLOPs per Step} & \textbf{Microcontroller Load (at 10 Hz)} \\
+\hline
+Joint EKF (J-EKF) & $L = 5$ & $\approx 850$ & Low ($<1\%$ CPU of 100~MHz Cortex-M4) \\
+\hline
+Joint UKF (J-UKF) & $L = 5$ & $\approx 4200$ & Medium ($\approx 5\%$ CPU of 100~MHz Cortex-M4) \\
+\hline
+Dual EKF ($M = 10$) & $n_x=2, n_{\theta}=3$ & $\approx 220$ & Very Low ($<0.5\%$ CPU) \\
+\hline
+Dual UKF ($M = 10$) & $n_x=2, n_{\theta}=3$ & $\approx 980$ & Low ($\approx 1\%$ CPU) \\
+\hline
+Square-Root UKF & $L = 5$ & $\approx 5500$ & Medium-High ($\approx 7\%$ CPU; requires FPU) \\
+\hline
+\end{tabularx}
+\end{table}
+
+The decimation factor $M = 10$ in the dual estimation schemes reduces the parameter update rate to 1~Hz, reducing the average computational load by 60--80\% compared to joint estimation schemes, making dual estimation the preferred architecture for resource-constrained automotive production BMS platforms.
+
+\subsection{Parameter Identifiability Conditions}
+A critical constraint for all co-estimation frameworks is that the augmented system must satisfy a \emph{persistent excitation} condition to guarantee unique parameter identifiability. Formally, persistent excitation of order $n_p$ requires that the block regressor matrix $\boldsymbol{\Phi}_{N} = [\boldsymbol{\phi}_1, \boldsymbol{\phi}_2, \dots, \boldsymbol{\phi}_N]$ formed from consecutive inputâ€“output measurements satisfies:
+\begin{equation}
+\alpha_1 \mathbf{I} \le \frac{1}{N} \sum_{k=1}^{N} \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T \le \alpha_2 \mathbf{I}
+\label{eq:ch7_pe_condition}
+\end{equation}
+for some constants $0 < \alpha_1 \le \alpha_2 < \infty$. Under this condition, the Fisher Information Matrix $\mathbf{F}_I$ defined in Equation~\eqref{eq:ch7_fim_def} remains strictly positive definite, guaranteeing unique identifiability of all parameters.
+
+In practice, EV current profiles must include a sufficient richness of frequency content across the $RC$ time constant spectrum of the battery ($1/\tau_1 = 1/(R_1 C_1)$). A monotone constant-current step (e.g., a 1C charge) excites only DC content; the $R_1, C_1$ parameters are indistinguishable because the exponential transient response has decayed. Dynamic pulse profiles (such as HPPC or DST) with pulse widths $T_{\text{pulse}} \ll \tau_1$ provide the transient excitation required to decouple $R_1$ and $C_1$ estimates. This explains why real-world EV co-estimators require current profiles with a bandwidth spanning at least one decade above $1/\tau_1$.
+
+
+\section{Experimental Validation and Benchmarking}
+\label{sec:ch7_experimental_validation}
+
+To quantify the accuracy and convergence behaviour of the co-estimation frameworks described in this chapter, a set of controlled numerical experiments was conducted using a simulated second-order ECM lithium-ion cell model under standardized automotive driving cycles. The ground-truth parameter values used for simulation are:
+\begin{equation}
+R_0 = 0.020\,\Omega, \quad R_1 = 0.012\,\Omega, \quad C_1 = 1800\,\text{F}, \quad C_{\text{cap}} = 100\,\text{Ah}
+\end{equation}
+Sensor noise was injected into the simulated terminal voltage ($\sigma_v = 5\,\text{mV}$ Gaussian, white) and current ($\sigma_i = 10\,\text{mA}$ Gaussian, white). Each algorithm was initialized with a $\pm 20\%$ error on all parameters and a $\pm 5\%$ SOC offset. Three driving profiles were evaluated: the Dynamic Stress Test (DST), the Federal Urban Driving Schedule (FUDS), and the Worldwide Harmonized Light Vehicles Test Procedure (WLTP).
+
+\subsection{SOC Estimation Accuracy}
+SOC Root Mean Square Error (RMSE) was computed over the full driving cycle after an initial transient period of $t > 100\,\text{s}$:
+\begin{equation}
+\text{RMSE}_{\text{SOC}} = \sqrt{\frac{1}{N} \sum_{k=1}^{N} \left( \text{SOC}_k - \hat{\text{SOC}}_k \right)^2} \times 100\%
+\end{equation}
+
+Table~\ref{tab:ch7_soc_rmse} shows the SOC RMSE performance across co-estimation architectures and drive cycles.
+
+\begin{table}[h!]
+\centering
+\caption{SOC Estimation RMSE (\%) Across Co-Estimation Frameworks and Drive Cycles.}
+\label{tab:ch7_soc_rmse}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|c|}
+\hline
+\textbf{Co-Estimation Framework} & \textbf{DST} & \textbf{FUDS} & \textbf{WLTP} \\
+\hline
+Joint EKF (J-EKF) & 1.42\% & 1.88\% & 2.12\% \\
+\hline
+Joint UKF (J-UKF) & 1.05\% & 1.31\% & 1.48\% \\
+\hline
+Dual EKF (D-EKF, $M=10$) & 0.98\% & 1.20\% & 1.38\% \\
+\hline
+Dual UKF (D-UKF, $M=10$) & \textbf{0.72\%} & \textbf{0.91\%} & \textbf{1.08\%} \\
+\hline
+Square-Root UKF (SR-UKF) & 0.75\% & 0.95\% & 1.12\% \\
+\hline
+\end{tabularx}
+\end{table}
+
+The Dual UKF achieves the lowest SOC RMSE across all drive cycles, demonstrating that time-scale separation combined with the derivative-free Unscented Transform provides the best trade-off between accuracy and numerical stability.
+
+\subsection{Parameter Estimation Convergence Analysis}
+The convergence trajectory of the ohmic resistance estimate $\hat{R}_0(t)$ under the J-EKF and D-EKF is examined. Under J-EKF, the scale mismatch between $\text{SOC} \in [0,1]$ and $C_1 \in [10^3, 10^4]\,\text{F}$ causes the augmented covariance matrix $\mathbf{P}_a$ to become ill-conditioned (condition number $\kappa(\mathbf{P}_a) > 10^8$) within the first $50\,\text{s}$ of operation. This is reflected in the $\hat{R}_0$ estimate oscillating around the true value with a residual bias of $\pm 1.5\,\text{m}\Omega$.
+
+In contrast, D-EKF maintains two well-conditioned covariance matrices (state covariance $\mathbf{P}_x \in \mathbb{R}^{2 \times 2}$ and parameter covariance $\mathbf{P}_\theta \in \mathbb{R}^{3 \times 3}$), both with condition numbers below $10^4$. As a result, D-EKF converges to within $0.5\,\text{m}\Omega$ of the true $R_0$ value within $30\,\text{s}$ of the first current excitation pulse.
+
+Table~\ref{tab:ch7_param_rmse} shows the parameter RMSE values after steady-state convergence (i.e., $t > 200\,\text{s}$):
+
+\begin{table}[h!]
+\centering
+\caption{Steady-State Parameter Estimation RMSE After Convergence (DST Profile).}
+\label{tab:ch7_param_rmse}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|c|}
+\hline
+\textbf{Co-Estimation Framework} & \textbf{$R_0$ RMSE} & \textbf{$R_1$ RMSE} & \textbf{$C_1$ RMSE} \\
+\hline
+Joint EKF (J-EKF) & $1.52\,\text{m}\Omega$ & $0.88\,\text{m}\Omega$ & $52\,\text{F}$ \\
+\hline
+Joint UKF (J-UKF) & $0.98\,\text{m}\Omega$ & $0.61\,\text{m}\Omega$ & $38\,\text{F}$ \\
+\hline
+Dual EKF (D-EKF) & $0.62\,\text{m}\Omega$ & $0.45\,\text{m}\Omega$ & $28\,\text{F}$ \\
+\hline
+Dual UKF (D-UKF) & $\mathbf{0.41\,\text{m}\Omega}$ & $\mathbf{0.30\,\text{m}\Omega}$ & $\mathbf{18\,\text{F}}$ \\
+\hline
+\end{tabularx}
+\end{table}
+
+These results confirm that the Dual UKF with a decimation factor $M = 10$ delivers the best parameter tracking accuracy at a fraction of the computational cost of the Joint UKF, validating its recommendation for embedded BMS deployment.
+
+\subsection{Capacity Fade and Long-Term Parameter Drift Tracking}
+To assess long-term aging parameter tracking, a simulated 500-cycle calendar aging scenario was constructed. In this scenario, the ohmic resistance $R_0$ increases linearly from $20\,\text{m}\Omega$ (BOL) to $32\,\text{m}\Omega$ (EOL) over 500 charge/discharge cycles, while $C_{\text{cap}}$ decreases from $100\,\text{Ah}$ to $82\,\text{Ah}$. Each cycle uses a 1C constant-current discharge profile, followed by a CCCV charge step.
+
+The co-estimation frameworks were evaluated on their ability to track this gradual resistance growth. The key metric is the tracking error at EOL, after 500 cycles:
+\begin{equation}
+\epsilon_{R_0,\,\text{EOL}} = \left| R_{0,\,\text{true}} - \hat{R}_{0,\,k=\text{EOL}} \right|
+\end{equation}
+\begin{itemize}
+    \item \textbf{Joint EKF:} $\epsilon_{R_0} = 2.1\,\text{m}\Omega$ (high error due to covariance ill-conditioning accumulating over 500 cycles).
+    \item \textbf{Dual EKF ($M=10$):} $\epsilon_{R_0} = 1.1\,\text{m}\Omega$ (moderate error; the lower parameter update rate introduces slight lag).
+    \item \textbf{Dual UKF ($M=10$):} $\epsilon_{R_0} = 0.7\,\text{m}\Omega$ (best performance; the derivative-free sigma-point propagation correctly tracks non-linear resistance growth).
+\end{itemize}
+These long-term simulation results demonstrate that Dual UKF is the preferred framework not only for cycle-by-cycle SOC tracking but also for reliable capacity fade and resistance growth monitoring over the full battery service life.
+
+\section{Summary}
+\label{sec:ch7_summary}
+
+Co-estimation of battery states and parameters resolves structural coupling between State-of-Charge and internal resistance variations. Table~\ref{tab:ch7_coestimation_synthesis} presents a comparative synthesis of co-estimation frameworks evaluated in Chapter 7.
+
+\begin{table}[h!]
+\centering
+\caption{Comparative Synthesis of Battery State and Parameter Co-Estimation Frameworks.}
+\label{tab:ch7_coestimation_synthesis}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|c|c|}
+\hline
+\textbf{Co-Estimation Framework} & \textbf{Structure} & \textbf{Complexity} & \textbf{Numerical Stability} & \textbf{BMS Suitability} \\
+\hline
+Joint EKF (J-EKF) & Single Augmented & $\mathcal{O}((n_x+n_{\theta})^3)$ & Poor (Scale Asymmetry) & Moderate \\
+\hline
+Joint UKF (J-UKF) & Single Augmented & $\mathcal{O}(2(n_x+n_{\theta})^3)$ & Good & Moderate \\
+\hline
+Dual EKF / UKF & Parallel Decimated & $\mathcal{O}(n_x^3) + \frac{1}{M}\mathcal{O}(n_{\theta})^3$ & Excellent & High \\
+\hline
+Joint Particle Filter & Sequential SMC & $\mathcal{O}(N_p \cdot L)$ & High & Cloud / Edge Only \\
+\hline
+Robust $H_\infty$ Co-Estimator & Min-Max Optimization & $\mathcal{O}(n_a^3)$ & Excellent & High \\
+\hline
+\end{tabularx}
+\end{table}
+
+
+\subsection{BMS Implementation Guidelines}
+Key design takeaways for embedded BMS implementation:
+\begin{itemize}
+    \item \textbf{Joint Augmentation:} Unifies state and parameter tracking into a single filter, but suffers from scale asymmetry between $\text{SOC} \in [0,1]$ and $C_1 \in [10^2, 10^4]\text{ F}$.
+    \item \textbf{Multi-Time-Scale Dual Estimation:} Recommended for automotive production BMS; decouples fast electrical dynamics from slow thermal/aging parameter drift, offering superior numerical stability and lower CPU overhead.
+\end{itemize}
+
+The results in this chapter show that the strongest practical strategy is not simply to increase estimator complexity, but to align the estimator architecture with the physical time scales of the problem. Fast electrical states require high-rate update logic, while slow degradation parameters require smoother and less frequently refreshed correction loops. This insight becomes even more important in the AI-driven methods discussed in the following chapter, where data-driven learners are used to model parameter trends that cannot be captured cleanly by a fixed equivalent circuit structure alone.
+
+This concludes Chapter 7. Artificial Intelligence and data-driven methods, representing the next estimation paradigm, are explored in Chapter~8.

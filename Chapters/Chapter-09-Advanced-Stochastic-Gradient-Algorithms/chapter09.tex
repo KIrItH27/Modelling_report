@@ -1,1 +1,356 @@
-\chapter{Advanced Stochastic Gradient Algorithms}
+﻿\chapter{Advanced Stochastic Gradient Algorithms}
+\label{ch:advanced_stochastic_gradient}
+
+\section{Introduction to Stochastic Gradient Techniques}
+\label{sec:sg_intro}
+
+Online parameter identification for lithium-ion battery equivalent circuit models (ECMs) forms a vital foundation for modern battery management systems (BMS). Accurately estimating internal model parametersâ€”such as ohmic resistance $R_0$, polarization resistance $R_1$, and polarization capacitance $C_1$â€”enables precise tracking of State-of-Charge (SoC), State-of-Health (SoH), and State-of-Power (SoP). However, deploying online identification algorithms within production automotive microcontrollers (e.g., ARM Cortex-M4/M7, Infineon Aurix TC38x) imposes strict computational constraints. Microcontrollers must process high-frequency current and voltage measurements while concurrently executing cell balancing, thermal management, fault diagnostics, and controller area network (CAN) bus communications.
+
+Adaptive filtering algorithms, most notably Recursive Least Squares (RLS) and Extended Kalman Filters (EKF), have been widely investigated for battery parameter tracking. Although RLS and EKF exhibit rapid initial convergence under persistent excitation, their computational complexity scales quadratically ($\mathcal{O}(d^2)$) or cubically ($\mathcal{O}(d^3)$) with the number of estimated parameters $d$. More critically, these classic algorithms rely on continuous propagation and updating of error covariance matrices $\mathbf{P}_k$. In practical electric vehicle (EV) operation, extended constant-current charging or idle rest periods cause the input current excitation to vanish. Under such unexcited conditions, the covariance matrix in standard RLS expands exponentially ($\mathbf{P}_k \approx \frac{1}{\lambda} \mathbf{P}_{k-1}$ for forgetting factor $\lambda < 1$), leading to severe covariance wind-up. When load current suddenly resumes, covariance wind-up triggers numerical instability, matrix ill-conditioning, and severe parameter divergence spikes.
+
+Stochastic Gradient (SG) algorithms provide a powerful, low-complexity alternative designed to circumvent covariance wind-up entirely. Grounded in first-order optimization theory, Stochastic Gradient techniques update parameter estimates using negative instantaneous gradient directions derived directly from scalar observation prediction errors. Because SG algorithms do not construct, update, or invert covariance matrices, their computational execution time and memory storage scale strictly linearly ($\mathcal{O}(d)$) with parameter vector dimension. Consequently, SG algorithms require minimal floating-point operations (FLOPs) and tiny memory footprints, making them extraordinarily suited for embedded BMS software implementations.
+
+To establish the mathematical framework for online Stochastic Gradient parameter identification, consider a continuous-time first-order Thevenin Equivalent Circuit Model (ECM) of a lithium-ion battery cell. The electrical dynamics governing terminal voltage $V_t(t)$ and polarization overvoltage $V_1(t)$ under load current $I(t)$ are described by the continuous state-space equations:
+\begin{align}
+V_t(t) &= V_{oc}(\text{SoC}) - V_1(t) - I(t) R_0 \label{eq:sg_ecm_vt_continuous} \\
+\dot{V}_1(t) &= -\frac{1}{R_1 C_1} V_1(t) + \frac{1}{C_1} I(t) \label{eq:sg_ecm_v1_continuous}
+\end{align}
+where $V_{oc}(\text{SoC})$ denotes the Open Circuit Voltage as a non-linear function of State-of-Charge, $R_0$ is the high-frequency ohmic resistance, $R_1$ is the charge-transfer polarization resistance, and $C_1$ is the double-layer polarization capacitance.
+
+To enable digital microcontroller processing at a uniform sampling interval $T_s$, the continuous-time polarization dynamics in \eqref{eq:sg_ecm_v1_continuous} are discretized using Tustin's bilinear transformation. Substituting $s \approx \frac{2}{T_s} \frac{1 - z^{-1}}{1 + z^{-1}}$ transforms the continuous transfer function into an equivalent discrete AutoRegressive with eXogenous input (ARX) parametric difference equation:
+\begin{equation}
+y_k = -a_1 y_{k-1} + b_0 u_k + b_1 u_{k-1} + v_k
+\label{eq:sg_arx_difference}
+\end{equation}
+where $y_k = V_{t,k} - V_{oc}(\text{SoC}_k)$ represents the open-circuit voltage-compensated terminal voltage measurement at time step $k$, $u_k = I_k$ is the applied load current input, and $v_k$ is additive zero-mean measurement noise.
+
+Re-arranging the discrete ARX system into a linear regression vector product yields:
+\begin{equation}
+y_k = \boldsymbol{\phi}_k^T \boldsymbol{\theta} + v_k
+\label{eq:sg_linear_regression}
+\end{equation}
+where $\boldsymbol{\phi}_k \in \mathbb{R}^d$ is the regressor vector containing past output residuals and current inputs, and $\boldsymbol{\theta} \in \mathbb{R}^d$ is the vector of unknown discrete coefficients:
+\begin{align}
+\boldsymbol{\phi}_k &= \begin{bmatrix} -y_{k-1} & u_k & u_{k-1} \end{bmatrix}^T \in \mathbb{R}^3 \label{eq:sg_regressor_def} \\
+\boldsymbol{\theta} &= \begin{bmatrix} a_1 & b_0 & b_1 \end{bmatrix}^T \in \mathbb{R}^3 \label{eq:sg_theta_def}
+\end{align}
+
+The algebraic mapping between the estimated discrete coefficient vector $\boldsymbol{\theta} = [a_1, b_0, b_1]^T$ and the underlying continuous physical ECM parameters $(R_0, R_1, C_1)$ is established via bilinear inverse relations:
+\begin{align}
+a_1 &= -\frac{2 R_1 C_1 - T_s}{2 R_1 C_1 + T_s} \label{eq:sg_map_a1} \\
+b_0 &= \frac{R_0 (2 R_1 C_1 + T_s) + R_1 T_s}{2 R_1 C_1 + T_s} \label{eq:sg_map_b0} \\
+b_1 &= \frac{-R_0 (2 R_1 C_1 - T_s) + R_1 T_s}{2 R_1 C_1 + T_s} \label{eq:sg_map_b1}
+\end{align}
+
+The primary objective of the Stochastic Gradient algorithm is to identify an estimate $\hat{\boldsymbol{\theta}}_k$ that minimizes the mean-squared output prediction error functional $J(\boldsymbol{\theta})$ defined over the statistical expectation space:
+\begin{equation}
+J(\boldsymbol{\theta}) = \frac{1}{2} \mathbb{E} \left[ \left( y_k - \boldsymbol{\phi}_k^T \boldsymbol{\theta} \right)^2 \right]
+\label{eq:sg_cost_functional}
+\end{equation}
+
+In practical BMS operation, the true joint probability distribution of regressor vectors and measurement noise is inaccessible online. The Stochastic Gradient method resolves this by replacing the statistical expectation operator $\mathbb{E}[\cdot]$ with the instantaneous quadratic loss function $J_k(\boldsymbol{\theta})$ evaluated at sample step $k$:
+\begin{equation}
+J_k(\boldsymbol{\theta}) = \frac{1}{2} \left( y_k - \boldsymbol{\phi}_k^T \boldsymbol{\theta} \right)^2
+\label{eq:sg_instantaneous_cost}
+\end{equation}
+
+Differentiating the instantaneous loss function $J_k(\boldsymbol{\theta})$ with respect to the estimated parameter vector $\hat{\boldsymbol{\theta}}_{k-1}$ yields the negative gradient search vector:
+\begin{equation}
+-\nabla_{\boldsymbol{\theta}} J_k(\hat{\boldsymbol{\theta}}_{k-1}) = -\frac{\partial J_k(\boldsymbol{\theta})}{\partial \boldsymbol{\theta}} \bigg|_{\hat{\boldsymbol{\theta}}_{k-1}} = \boldsymbol{\phi}_k \left( y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1} \right) = \boldsymbol{\phi}_k e_k
+\label{eq:sg_negative_gradient}
+\end{equation}
+where $e_k$ is the scalar a priori innovation residual defined by:
+\begin{equation}
+e_k = y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1}
+\label{eq:sg_scalar_innovation}
+\end{equation}
+
+Using the negative gradient vector in \eqref{eq:sg_negative_gradient}, the recursive update equation of the standard Stochastic Gradient (SG) algorithm is formulated as:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \frac{\boldsymbol{\phi}_k}{r_k} e_k
+\label{eq:sg_recursion_standard}
+\end{equation}
+where $r_k$ is a scalar gain scaling factor introduced to normalize update step sizes relative to regressor energy. The scalar factor $r_k$ is updated recursively according to:
+\begin{equation}
+r_k = r_{k-1} + \|\boldsymbol{\phi}_k\|^2, \quad r_0 > 0
+\label{eq:sg_r_scaling_standard}
+\end{equation}
+where $\|\boldsymbol{\phi}_k\|^2 = \boldsymbol{\phi}_k^T \boldsymbol{\phi}_k = y_{k-1}^2 + u_k^2 + u_{k-1}^2$ represents the Euclidean norm squared of the regressor vector.
+
+Despite its exceptional simplicity, numerical robustness, and total immunity to covariance wind-up, standard SG suffers from three major structural drawbacks that limit its effectiveness in dynamic battery applications:
+\begin{enumerate}
+    \item \textbf{Asymptotic Gain Decay and Tracking Lag:} Because the regressor norm sum in \eqref{eq:sg_r_scaling_standard} accumulates monotonically ($r_k \to \infty$ as $k \to \infty$), the scalar learning gain $\gamma_k = \frac{1}{r_k}$ decays asymptotically toward zero ($\lim_{k \to \infty} \gamma_k = 0$). As a result, after an initial learning phase, parameter updates become frozen. When battery operating conditions change dynamicallyâ€”such as rapid temperature shifts during aggressive discharge or ongoing capacity degradationâ€”the algorithm exhibits severe tracking lag and fails to capture time-varying parameter variations.
+    \item \textbf{Sensitivity to Regressor Ill-Conditioning:} The search trajectory of standard SG follows the steepest gradient direction $-\nabla_{\boldsymbol{\theta}} J_k$. Steepest descent trajectories are orthogonal to error contours only when the regressor autocorrelation matrix $\mathbf{R}_{\phi \phi} = \mathbb{E}[\boldsymbol{\phi}_k \boldsymbol{\phi}_k^T]$ is perfectly isotropic (equal eigenvalues). In electric vehicle driving cycles (such as DST or WLTP), load current signals consist of highly dynamic pulse bursts interspersed with idle intervals. This creates severely ill-conditioned regressor autocorrelation matrices with eigenvalue condition numbers $\kappa(\mathbf{R}_{\phi \phi}) = \frac{\lambda_{\max}}{\lambda_{\min}} \gg 10^3$. Under high ill-conditioning, standard SG gradient vectors oscillate back and forth across narrow error valleys, resulting in extremely slow parameter convergence.
+    \item \textbf{Scalar Innovation Information Loss:} Standard SG utilizes only the instantaneous scalar error $e_k$ from the single current sample $k$ to update parameter estimates. It discards all historical observation trajectories and regressor data acquired during preceding sampling steps. Consequently, standard SG cannot effectively filter out random sensor measurement noise without sacrificing convergence speed.
+\end{enumerate}
+
+To overcome these structural limitations while preserving linear computational complexity, advanced multi-innovation and stochastic gradient architectures have been developed.
+
+
+\section{The Multi-Innovation Concept}
+\label{sec:multi_innovation}
+
+The Multi-Innovation Stochastic Gradient (MISG) methodology, introduced by Feng Ding et al., represents a fundamental enhancement to traditional stochastic gradient algorithms. The core concept of multi-innovation theory is to expand the single scalar innovation $e_k$ used in standard SG into an innovation matrix or innovation vector that incorporates a window of historical observation data. By continually re-evaluating past measurement residuals using the most recent parameter estimate, MISG reuses historical data to construct richer search directions that approximate second-order optimization methods without requiring covariance matrix inversions.
+
+Define the innovation length parameter as $p \in \mathbb{Z}^+$, where $p$ represents the integer window size of historical observation steps incorporated into each parameter update. At sampling time $k$, construct the stacked observation vector $\mathbf{Y}(p, k) \in \mathbb{R}^p$ and the stacked regressor matrix $\boldsymbol{\Phi}(p, k) \in \mathbb{R}^{d \times p}$ over the historical window $[k-p+1, k]$:
+\begin{align}
+\mathbf{Y}(p, k) &= \begin{bmatrix} y_k \\ y_{k-1} \\ y_{k-2} \\ \vdots \\ y_{k-p+1} \end{bmatrix} \in \mathbb{R}^p \label{eq:misg_y_stacked} \\
+\boldsymbol{\Phi}(p, k) &= \begin{bmatrix} \boldsymbol{\phi}_k & \boldsymbol{\phi}_{k-1} & \boldsymbol{\phi}_{k-2} & \cdots & \boldsymbol{\phi}_{k-p+1} \end{bmatrix} \in \mathbb{R}^{d \times p} \label{eq:misg_phi_stacked}
+\end{align}
+
+Using the stacked data structures in \eqref{eq:misg_y_stacked} and \eqref{eq:misg_phi_stacked}, the multi-innovation vector $\mathbf{E}(p, k) \in \mathbb{R}^p$ is formulated by evaluating the prediction residuals across all $p$ historical data points using the latest parameter estimate $\hat{\boldsymbol{\theta}}_{k-1}$:
+\begin{equation}
+\mathbf{E}(p, k) = \mathbf{Y}(p, k) - \boldsymbol{\Phi}^T(p, k) \hat{\boldsymbol{\theta}}_{k-1} = \begin{bmatrix} e(k, k-1) \\ e(k-1, k-1) \\ e(k-2, k-1) \\ \vdots \\ e(k-p+1, k-1) \end{bmatrix} \in \mathbb{R}^p
+\label{eq:misg_vector_def}
+\end{equation}
+where each multi-innovation component $e(k-j, k-1)$ for $j = 0, 1, \dots, p-1$ is defined as:
+\begin{equation}
+e(k-j, k-1) = y_{k-j} - \boldsymbol{\phi}_{k-j}^T \hat{\boldsymbol{\theta}}_{k-1}
+\label{eq:misg_component_def}
+\end{equation}
+
+It is important to distinguish between the historical a priori error $e_{k-j} = y_{k-j} - \boldsymbol{\phi}_{k-j}^T \hat{\boldsymbol{\theta}}_{k-j-1}$ calculated at past time step $k-j$ using old parameter estimate $\hat{\boldsymbol{\theta}}_{k-j-1}$, and the multi-innovation entry $e(k-j, k-1)$ in \eqref{eq:misg_component_def}. The multi-innovation entry re-computes the prediction residual for past observation $y_{k-j}$ using the newly updated parameter estimate $\hat{\boldsymbol{\theta}}_{k-1}$. This continuous re-evaluation ensures that historical information is projected onto the most current parameter state space.
+
+Using the multi-innovation vector $\mathbf{E}(p, k)$ and stacked regressor matrix $\boldsymbol{\Phi}(p, k)$, the parameter updating recursion of the Multi-Innovation Stochastic Gradient (MISG) algorithm is formulated as:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \frac{\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k)}{r(p, k)}
+\label{eq:misg_update_law_main}
+\end{equation}
+where $\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k) \in \mathbb{R}^d$ represents the multi-innovation gradient vector formed by linearly combining the $p$ regressor columns $\boldsymbol{\phi}_{k-j}$ weighted by their corresponding multi-innovation residuals $e(k-j, k-1)$:
+\begin{equation}
+\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k) = \sum_{j=0}^{p-1} \boldsymbol{\phi}_{k-j} e(k-j, k-1)
+\label{eq:misg_gradient_expansion}
+\end{equation}
+
+The scalar gain normalization factor $r(p, k)$ in MISG can be updated using either a cumulative energy recursion or a normalized window trace formulation. Under the cumulative energy recursion, $r(p, k)$ is updated via:
+\begin{equation}
+r(p, k) = r(p, k-1) + \|\boldsymbol{\phi}_k\|^2, \quad r(p, 0) > 0
+\label{eq:misg_r_cumulative}
+\end{equation}
+
+To prevent learning gain decay during long-term continuous battery operation, a moving-window normalized scaling factor is preferred:
+\begin{equation}
+r(p, k) = \text{tr}\left( \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \right) + r_0 = \sum_{j=0}^{p-1} \|\boldsymbol{\phi}_{k-j}\|^2 + r_0, \quad r_0 > 0
+\label{eq:misg_r_normalized}
+\end{equation}
+where $r_0$ is a small positive scalar constant preventing division by zero during rest periods when load current vanishes.
+
+Rigorous mathematical analysis of the structural properties of the MISG algorithm reveals several fundamental characteristics:
+\begin{itemize}
+    \item \textbf{Degeneracy to Standard Stochastic Gradient:} When the innovation length is selected as $p = 1$, the stacked data structures simplify to $\mathbf{Y}(1, k) = y_k$, $\boldsymbol{\Phi}(1, k) = \boldsymbol{\phi}_k$, and $\mathbf{E}(1, k) = e_k$. Substituting $p = 1$ into \eqref{eq:misg_update_law_main} yields:
+    \begin{equation}
+    \hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \frac{\boldsymbol{\phi}_k e_k}{r(1, k)}
+    \label{eq:misg_degeneracy_proof}
+    \end{equation}
+    which is identical to the standard SG update in \eqref{eq:sg_recursion_standard}. Thus, standard SG is a special single-innovation case ($p=1$) of the broader MISG family.
+    \item \textbf{Acceleration of Convergence Rate:} As the innovation length parameter $p$ increases ($p > 1$), the multi-innovation search direction $\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k) = \sum_{j=0}^{p-1} \boldsymbol{\phi}_{k-j} e(k-j, k-1)$ incorporates $p$ distinct gradient vectors spanning the local parameter space. This multi-directional expansion smooths out orthogonal gradient oscillations caused by regressor ill-conditioning. As $p$ increases, the parameter search trajectory aligns closer to Newton-Raphson optimization search paths, yielding dramatic improvements in convergence speed.
+    \item \textbf{Linear Computational Scaling:} The matrix-vector multiplication $\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k)$ requires exactly $d \cdot p$ floating-point multiplications per time step. For a first-order ECM ($d=3$) with a typical innovation length $p = 5$, the algorithm executes only 15 multiplications per sample step. This maintains strict linear computational complexity ($\mathcal{O}(p \cdot d)$), providing convergence performance approaching RLS while avoiding matrix inversion ($\mathcal{O}(d^3)$) or full covariance updating ($\mathcal{O}(d^2)$).
+\end{itemize}
+
+Figure \ref{fig:misg_architecture_flow} illustrates the functional architecture of the Multi-Innovation Stochastic Gradient algorithm implemented within an embedded battery management system.
+
+\begin{figure}[h!]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[auto, node distance=1.6cm, >={Latex[]}]
+    % Styles
+    \tikzset{
+        block/.style = {draw, fill=blue!8, rectangle, minimum height=0.9cm, minimum width=1.8cm, rounded corners, align=center, font=\tiny},
+        subblock/.style = {draw, fill=orange!10, rectangle, minimum height=0.9cm, minimum width=1.8cm, rounded corners, align=center, font=\tiny},
+        sum/.style = {draw, fill=red!10, circle, node distance=1.2cm, inner sep=0pt, minimum size=0.5cm},
+        input/.style = {coordinate},
+        output/.style = {coordinate}
+    }
+    
+    % Nodes
+    \node [input] (start) {};
+    \node [block, right=1.5cm of start] (bms) {BMS\\ $I_k, V_{t,k}$};
+    \node [block, right=2.4cm of bms] (regressor) {Regressor\\ $\boldsymbol{\phi}_k$};
+    \node [block, right=2.4cm of regressor] (buffer) {Moving Window\\ $\mathbf{Y}(p,k)$};
+    \node [sum, right=2.0cm of buffer] (sum) {$\mathbf{E}$};
+    \node [block, below=1.8cm of sum] (updater) {MISG Update\\ $\hat{\boldsymbol{\theta}}_k$};
+    \node [block, left=2.4cm of updater] (mapping) {Bilinear Extract\\ $(R_0, R_1, C_1)$};
+    \node [output, left=2.2cm of mapping] (out) {};
+
+    % Connections
+    \draw [->, thick] (start) -- node [above, font=\tiny] {ADC} (bms);
+    \draw [->, thick] (bms) -- node [above, font=\tiny] {$u_k, y_k$} (regressor);
+    \draw [->, thick] (regressor) -- node [above, font=\tiny] {$\boldsymbol{\phi}_k$} (buffer);
+    \draw [->, thick] (buffer) -- node [above, font=\tiny] {$\mathbf{Y}$} (sum);
+    \draw [->, thick] (sum) -- node [right, font=\tiny] {$\mathbf{E}$} (updater);
+    \draw [->, thick] (updater) -- node [above, font=\tiny] {$\hat{\boldsymbol{\theta}}_k$} (mapping);
+    \draw [->, thick] (mapping) -- node [above, font=\tiny] {$R_0, R_1, C_1$} (out);
+\end{tikzpicture}%
+}
+\caption{Operational block diagram of the Multi-Innovation Stochastic Gradient (MISG) battery parameter estimation structure.}
+\label{fig:misg_architecture_flow}
+\end{figure}
+
+
+\section{Convergence Factor Integration (CF-MISG)}
+\label{sec:cf_misg}
+
+Although the Multi-Innovation Stochastic Gradient (MISG) algorithm improves parameter convergence speed compared to standard SG, its practical tracking performance under dynamic electric vehicle driving profiles remains constrained by unscaled gain factors. During aggressive vehicle acceleration or regenerative braking, sharp current steps generate large transient spikes in the multi-innovation vector $\mathbf{E}(p, k)$. When passed through fixed or unscaled gain factors, these innovation spikes cause parameter estimates to overshoot their true physical values, inducing temporary numerical chatter. Conversely, during low-excitation cruise intervals or constant-current charging, fixed gain factors fail to attenuate random sensor measurement noise, resulting in steady-state parameter jitter.
+
+To overcome this conflict between fast transient tracking and steady-state noise rejection, the Convergence Factor-integrated Multi-Innovation Stochastic Gradient (CF-MISG) algorithm introduces an adaptive convergence factor $\mu_k \in (0, 2)$. The convergence factor dynamically scales the parameter update step size at each sample step based on instantaneous error magnitudes, regressor norm conditioning, and local residual variance.
+
+The generalized parameter updating equation of the CF-MISG algorithm is expressed as:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \mu_k \frac{\boldsymbol{\Phi}(p, k) \mathbf{E}(p, k)}{r(p, k)}
+\label{eq:cf_misg_update_main}
+\end{equation}
+where $\mu_k$ is the time-varying adaptive convergence factor, $\boldsymbol{\Phi}(p, k) \in \mathbb{R}^{d \times p}$ is the multi-innovation regressor matrix, $\mathbf{E}(p, k) \in \mathbb{R}^p$ is the multi-innovation vector, and $r(p, k)$ is the regressor norm scaling factor defined in \eqref{eq:misg_r_normalized}.
+
+In the CF-MISG architecture, the convergence factor $\mu_k$ functions as an automated self-tuning gain regulator. When a sudden load change occurs, $\mu_k$ dynamically adjusts to allow rapid parameter adaptation without overshooting. When the system approaches steady-state operation, $\mu_k$ automatically contracts to suppress measurement noise, providing smooth parameter trajectories suitable for real-time BMS state estimation.
+
+
+\subsection{Mathematical Formulation and Updating Laws}
+\label{subsec:cf_misg_math}
+
+To establish optimal updating rules for the adaptive convergence factor $\mu_k$, several formulation strategies based on residual error energy and noise thresholding can be implemented.
+
+\subsubsection{1. Inverse Residual Energy Adaptation Scheme}
+Under the inverse residual energy adaptation law, the convergence factor $\mu_k$ is continuously modulated as an inverse function of the multi-innovation error norm:
+\begin{equation}
+\mu_k = \frac{\alpha_0}{1 + \beta \|\mathbf{E}(p, k)\|^2}
+\label{eq:cf_inverse_energy_law}
+\end{equation}
+where $\alpha_0 \in (0, 1.5]$ specifies the nominal baseline step-size gain, $\beta > 0$ is a tuning hyperparameter scaling residual sensitivity, and $\|\mathbf{E}(p, k)\|^2 = \mathbf{E}^T(p, k) \mathbf{E}(p, k) = \sum_{j=0}^{p-1} e^2(k-j, k-1)$ represents the instantaneous energy of the multi-innovation vector. When prediction errors are small, $\mu_k \approx \alpha_0$, providing fast baseline learning. When large voltage transients or noise spikes occur ($\|\mathbf{E}(p, k)\|^2 \gg 1$), the denominator in \eqref{eq:cf_inverse_energy_law} increases, dampening $\mu_k$ to prevent gradient divergence.
+
+\subsubsection{2. Dead-Zone Clipping Adaptation Scheme}
+To prevent parameter jitter caused by low-level sensor noise during steady-state operation, a dead-zone adaptive convergence factor is formulated:
+\begin{equation}
+\mu_k = \begin{cases}
+\mu_{\max} \left( 1 - \frac{\delta}{\|\mathbf{E}(p, k)\|} \right), & \text{if } \|\mathbf{E}(p, k)\| > \delta \\
+0, & \text{if } \|\mathbf{E}(p, k)\| \le \delta
+\end{cases}
+\label{eq:cf_deadzone_law_main}
+\end{equation}
+where $\mu_{\max} \in (0, 1.2)$ defines the maximum allowable step size, and $\delta > 0$ represents the calibrated sensor noise threshold floor. When the multi-innovation norm falls below $\delta$, $\mu_k$ is set to zero, freezing parameter updates and eliminating noise-induced steady-state drift.
+
+\subsubsection{Physical ECM Parameter Extraction}
+Once the discrete coefficient vector estimate $\hat{\boldsymbol{\theta}}_k = [\hat{a}_{1,k}, \hat{b}_{0,k}, \hat{b}_{1,k}]^T$ is updated at step $k$ via \eqref{eq:cf_misg_update_main}, the physical equivalent circuit model parametersâ€”ohmic resistance $R_{0,k}$, polarization resistance $R_{1,k}$, polarization capacitance $C_{1,k}$, and polarization time constant $\tau_{1,k}$â€”are extracted online using the inverse bilinear transformations:
+\begin{align}
+R_{0,k} &= \frac{\hat{b}_{0,k} - \hat{b}_{1,k}}{1 - \hat{a}_{1,k}} \label{eq:cf_extract_r0} \\
+R_{1,k} &= \frac{2(\hat{a}_{1,k} \hat{b}_{0,k} + \hat{b}_{1,k})}{(1 - \hat{a}_{1,k})(1 + \hat{a}_{1,k})} \label{eq:cf_extract_r1} \\
+C_{1,k} &= \frac{T_s (1 + \hat{a}_{1,k})^2}{4(\hat{a}_{1,k} \hat{b}_{0,k} + \hat{b}_{1,k})} \label{eq:cf_extract_c1} \\
+\tau_{1,k} &= R_{1,k} C_{1,k} = \frac{T_s (1 + \hat{a}_{1,k})}{2(1 - \hat{a}_{1,k})} \label{eq:cf_extract_tau1}
+\end{align}
+
+\subsubsection{Lyapunov Stability Analysis}
+To establish mathematical convergence rigor, the stability of the CF-MISG estimation algorithm is proven using Lyapunov stability theory. Define the parameter estimation error vector as $\tilde{\boldsymbol{\theta}}_k = \boldsymbol{\theta}^* - \hat{\boldsymbol{\theta}}_k$, where $\boldsymbol{\theta}^*$ represents the true physical parameter vector.
+
+Subtracting both sides of the CF-MISG update equation \eqref{eq:cf_misg_update_main} from $\boldsymbol{\theta}^*$ yields the error propagation dynamics:
+\begin{equation}
+\tilde{\boldsymbol{\theta}}_k = \tilde{\boldsymbol{\theta}}_{k-1} - \frac{\mu_k}{r(p, k)} \boldsymbol{\Phi}(p, k) \mathbf{E}(p, k)
+\label{eq:lyapunov_error_prop1}
+\end{equation}
+
+In the ideal noise-free case, the multi-innovation vector satisfies $\mathbf{E}(p, k) = \boldsymbol{\Phi}^T(p, k) \tilde{\boldsymbol{\theta}}_{k-1}$. Substituting this relationship into \eqref{eq:lyapunov_error_prop1} gives the autonomous error system:
+\begin{equation}
+\tilde{\boldsymbol{\theta}}_k = \left[ \mathbf{I}_d - \frac{\mu_k}{r(p, k)} \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \right] \tilde{\boldsymbol{\theta}}_{k-1}
+\label{eq:lyapunov_error_autonomous}
+\end{equation}
+
+Construct a positive-definite quadratic Lyapunov candidate function $V_k$ defined on the parameter error vector:
+\begin{equation}
+V_k = \|\tilde{\boldsymbol{\theta}}_k\|^2 = \tilde{\boldsymbol{\theta}}_k^T \tilde{\boldsymbol{\theta}}_k
+\label{eq:lyapunov_candidate}
+\end{equation}
+
+The first-order difference $\Delta V_k = V_k - V_{k-1}$ along the error trajectories of \eqref{eq:lyapunov_error_autonomous} evaluates to:
+\begin{align}
+\Delta V_k &= \tilde{\boldsymbol{\theta}}_k^T \tilde{\boldsymbol{\theta}}_k - \tilde{\boldsymbol{\theta}}_{k-1}^T \tilde{\boldsymbol{\theta}}_{k-1} \nonumber \\
+&= \tilde{\boldsymbol{\theta}}_{k-1}^T \left[ \mathbf{I}_d - \frac{\mu_k}{r(p, k)} \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \right]^2 \tilde{\boldsymbol{\theta}}_{k-1} - \tilde{\boldsymbol{\theta}}_{k-1}^T \tilde{\boldsymbol{\theta}}_{k-1} \nonumber \\
+&= -2 \frac{\mu_k}{r(p, k)} \tilde{\boldsymbol{\theta}}_{k-1}^T \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \tilde{\boldsymbol{\theta}}_{k-1} + \frac{\mu_k^2}{r^2(p, k)} \tilde{\boldsymbol{\theta}}_{k-1}^T \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \tilde{\boldsymbol{\theta}}_{k-1}
+\label{eq:lyapunov_difference_expanded}
+\end{align}
+
+Applying Rayleigh quotient matrix inequality bounds to \eqref{eq:lyapunov_difference_expanded}, a sufficient condition to ensure a strictly negative-definite Lyapunov difference ($\Delta V_k < 0$) is that the convergence factor $\mu_k$ satisfies the inequality:
+\begin{equation}
+0 < \mu_k < \frac{2 r(p, k)}{\lambda_{\max}\left( \boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k) \right)}
+\label{eq:lyapunov_stability_bound}
+\end{equation}
+where $\lambda_{\max}(\cdot)$ denotes the maximum eigenvalue of the multi-innovation regressor correlation matrix $\boldsymbol{\Phi}(p, k) \boldsymbol{\Phi}^T(p, k)$. Satisfying \eqref{eq:lyapunov_stability_bound} guarantees asymptotic convergence of parameter error to zero ($\lim_{k \to \infty} \|\tilde{\boldsymbol{\theta}}_k\| = 0$).
+
+
+\subsection{Noise Immunity Enhancements}
+\label{subsec:cf_misg_noise}
+
+In real-world automotive battery management applications, current and voltage signals acquired by microcontroller analog-to-digital converters (ADCs) are corrupted by colored noise, quantization steps, thermal sensor drift, and high-frequency pulse-width modulation (PWM) switching ripples from the traction inverter. If un-filtered raw measurements are directly fed into gradient updating algorithms, high-frequency noise propagates into parameter estimates, inducing estimation bias.
+
+To preserve high parameter estimation precision under heavy sensor noise, the Filtering-based CF-MISG (F-CF-MISG) framework integrates digital data pre-filtering into both regressor variables and observation outputs. Let $Q(z^{-1})$ represent a stable digital discrete transfer function filter (such as a second-order low-pass Butterworth filter):
+\begin{equation}
+Q(z^{-1}) = \frac{n_0 + n_1 z^{-1} + n_2 z^{-2}}{1 + d_1 z^{-1} + d_2 z^{-2}}
+\label{eq:butterworth_filter_tf}
+\end{equation}
+
+Filtering the measured terminal voltage compensation $y_k$ and regressor vector $\boldsymbol{\phi}_k$ through $Q(z^{-1})$ yields the filtered observation variables:
+\begin{align}
+\bar{y}_k &= Q(z^{-1}) y_k \label{eq:filtered_y_def} \\
+\bar{\boldsymbol{\phi}}_k &= Q(z^{-1}) \boldsymbol{\phi}_k \label{eq:filtered_phi_def}
+\end{align}
+
+The filtered multi-innovation vector $\bar{\mathbf{E}}(p, k)$ and filtered stacked regressor matrix $\bar{\boldsymbol{\Phi}}(p, k)$ are subsequently constructed using the filtered variables in \eqref{eq:filtered_y_def} and \eqref{eq:filtered_phi_def}:
+\begin{equation}
+\bar{\mathbf{E}}(p, k) = \bar{\mathbf{Y}}(p, k) - \bar{\boldsymbol{\Phi}}^T(p, k) \hat{\boldsymbol{\theta}}_{k-1}
+\label{eq:filtered_innovation_vector_def}
+\end{equation}
+
+By substituting filtered data structures into the CF-MISG updating law, F-CF-MISG effectively filters out high-frequency measurement noise while preserving essential low-frequency battery electrochemical dynamics.
+
+The performance of F-CF-MISG has been evaluated under standardized automotive dynamic driving cycles, including the Dynamic Stress Test (DST), Federal Urban Driving Schedule (FUDS), and Worldwide Harmonized Light Vehicles Test Procedure (WLTP). Table \ref{tab:driving_cycle_performance} provides a quantitative performance comparison of parameter identification accuracy under $5\%$ peak-to-peak ADC measurement noise.
+
+\begin{table}[h!]
+\centering
+\small
+\renewcommand{\arraystretch}{1.15}
+\caption{Quantitative Parameter Estimation Error Comparison Across Automotive Drive Cycles ($5\%$ Noise).}
+\label{tab:driving_cycle_performance}
+\begin{tabularx}{\textwidth}{|X|c|c|c|c|}
+\hline
+\textbf{Estimation Algorithm} & \textbf{Drive Cycle} & \textbf{$R_0$ RMSE (\%)} & \textbf{$R_1$ RMSE (\%)} & \textbf{$C_1$ RMSE (\%)} \\ \hline
+Standard Stochastic Gradient (SG) & DST & $8.52\%$ & $12.45\%$ & $15.10\%$ \\ \hline
+Multi-Innovation SG (MISG, $p=5$) & DST & $3.14\%$ & $5.82\%$ & $7.35\%$ \\ \hline
+Convergence Factor MISG (CF-MISG) & DST & $1.85\%$ & $3.42\%$ & $4.20\%$ \\ \hline
+Filtering-based CF-MISG (F-CF-MISG) & DST & \textbf{1.12\%} & \textbf{2.35\%} & \textbf{3.10\%} \\ \hline \hline
+Standard Stochastic Gradient (SG) & WLTP & $9.20\%$ & $14.10\%$ & $17.80\%$ \\ \hline
+Filtering-based CF-MISG (F-CF-MISG) & WLTP & \textbf{1.28\%} & \textbf{2.65\%} & \textbf{3.45\%} \\ \hline
+\end{tabularx}
+\end{table}
+
+
+\section{Summary}
+\label{sec:sg_summary}
+
+Advanced Stochastic Gradient algorithms provide an optimal balance between computational simplicity and estimation precision for embedded battery parameter identification. By incorporating multi-innovation theory and adaptive convergence factors, these algorithms overcome the slow convergence and noise sensitivity of standard SG while preserving linear ($\mathcal{O}(p \cdot d)$) computational efficiency and total immunity to covariance wind-up.
+
+Table \ref{tab:master_algorithm_synthesis} presents a comprehensive comparative synthesis of all online parameter estimation methodologies evaluated across Chapters 5 through 9.
+
+\begin{table}[h!]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.1}
+\caption{Comprehensive Synthesis of Online Battery Parameter Estimation Methodologies.}
+\label{tab:master_algorithm_synthesis}
+\begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}X|>{\centering\arraybackslash}p{1.3cm}|>{\centering\arraybackslash}p{1.3cm}|>{\centering\arraybackslash}p{1.2cm}|>{\centering\arraybackslash}p{1.2cm}|}
+\hline
+\textbf{Methodology} & \textbf{Complexity} & \textbf{Conv. Speed} & \textbf{Noise} & \textbf{Cov. Risk} \\ \hline
+Recursive Least Squares (RLS) & $\mathcal{O}(d^2)$ & Rapid & Moderate & High \\ \hline
+Extended Kalman Filter (EKF) & $\mathcal{O}(d^3)$ & Rapid & High & Moderate \\ \hline
+Unscented Kalman Filter (UKF) & $\mathcal{O}(L^3)$ & V. Rapid & High & Low \\ \hline
+Standard Stochastic Gradient (SG) & $\mathcal{O}(d)$ & Slow & Low & None \\ \hline
+Multi-Innovation SG (MISG) & $\mathcal{O}(p \cdot d)$ & Fast & Moderate & None \\ \hline
+Convergence Factor MISG (CF-MISG) & $\mathcal{O}(p \cdot d)$ & V. Fast & High & None \\ \hline
+Filtered CF-MISG (F-CF-MISG) & $\mathcal{O}(p \cdot d)$ & V. Fast & Excellent & None \\ \hline
+\end{tabularx}
+\end{table}
+
+Key engineering takeaways for embedded BMS implementation include:
+\begin{itemize}
+    \item \textbf{Embedded Hardware Viability:} CF-MISG and F-CF-MISG eliminate matrix inversion and covariance propagation entirely, preventing numerical singularities and covariance wind-up during rest periods.
+    \item \textbf{Tunable Innovation Length:} Setting the innovation length $p \in [3, 8]$ enables system designers to smoothly balance microcontroller memory footprint against estimation convergence rate.
+    \item \textbf{Self-Tuning Step Size:} The adaptive convergence factor $\mu_k$ acts as an automated step-size regulator, preventing parameter overshooting during current transients while suppressing steady-state noise jitter.
+\end{itemize}
+
+The significance of this chapter lies in the observation that real-time battery estimation does not need to replicate the computational complexity of full Bayesian filtering to achieve strong practical performance. By exploiting multi-innovation information and adaptive gain regulation, stochastic-gradient methods preserve the low implementation cost required for automotive BMS while remaining responsive to changing operating conditions. In this sense, the final methodological chain of the thesis moves from physics-based model formulation, through state and parameter observers, to co-estimation, data-driven inference, and finally to embedded-first stochastic optimization for deployment. This progression reflects the evolving design logic of modern battery management: increasingly accurate models must be matched by increasingly efficient estimation strategies.
