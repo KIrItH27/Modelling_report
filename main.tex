@@ -3,16 +3,20 @@
 % =========================
 % Packages
 % =========================
-
+\usepackage{booktabs}
 \usepackage[utf8]{inputenc}
 \usepackage{geometry}
 \geometry{a4paper, margin=1in}
-
+\usepackage{tabularx}
 \usepackage{setspace}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{tikz}
 \usepackage{hyperref}
+\usepackage{cite}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 
 % =========================
 % Document
@@ -20,30 +24,58 @@
 
 \begin{document}
 
-% Title
-
-\begin{center}
-    \LARGE \textbf{Parameter Estimation Techniques for Lithium-Ion Batteries}
-
-    \vspace{1.5em}
-
-    \normalsize \textbf{Group 13}
-
-    \vspace{0.5em}
-
-    \small
-    Kirithik B (CB.AI.U4AID25023)\\
-    Vishnu Prasad P (CB.AI.U4AID25059)\\
-    Vegulla Satya Amruth Chowdary (CB.AI.U4AID25057)\\
-    Sankardas K K (CB.AI.U4AID25048)
-\end{center}
-
+% =========================
+% Title Page
+% =========================
+\begin{titlepage}
+    \begin{center}
+        \includegraphics[width=0.35\textwidth]{images.png} \\[1.5cm]
+        % 1. University Name
+        \vspace{-0.9cm}
+        \Huge \textbf{Amrita Vishwa Vidyapeetham} \\[0.5cm]
+        
+        % 2. Department Name
+        \LARGE Department of Artificial Intelligence \& Data Science \\[1.5cm]
+        
+        % 4. Subject / Course Name
+        \Large \textbf{Modelling Simulation and Analysis}\\
+        \Large \textbf{Course Code: 23AID20} \\[1.0cm]
+        
+        % 5. Report Title
+        \Huge \textbf{Parameter Estimation Techniques \\ for Lithium-Ion Batteries} \\[1.5cm]
+        \vspace{-0.6cm}
+        
+        % 6. Team Information
+        \Large \textbf{A-13} \\[0.5cm]
+        \large
+        \begin{tabular}{ll}
+            Kirithik B & (CB.AI.U4AID25023) \\
+            Vishnu Prasad P & (CB.AI.U4AID25059) \\
+            Vegulla Satya Amruth Chowdary & (CB.AI.U4AID25057) \\
+            Sankardas K K & (CB.AI.U4AID25048)
+        \end{tabular} \\[1.5cm]
+        \vspace{-0.8cm}
+        
+        % 7. Instructor Information
+        \Large \textbf{Submitted to:} \\[0.2cm]
+        \large \textbf{Dr. Akhil V. M.} \\
+        \large Assistant Professor (Sr. Gd), School of Artificial Intelligence, Coimbatore \\[1.0cm]
+        
+        \vfill
+        
+        % 8. Date
+        \large \textbf{\today}
+        
+    \end{center}
+\end{titlepage}
 \newpage
 
+% =========================
+% Main Content Begins
+% =========================
+
 % Table of Contents
-
 \tableofcontents
-
 \newpage
 
 % =========================
@@ -51,27 +83,22 @@
 % =========================
 
 \include{chapters/Chapter-01-Introduction/chapter01}
-
 \include{chapters/Chapter-02-Battery-Modelling/chapter02}
-
 \include{chapters/Chapter-03-Experimental-Characterization-and-Data-Acquisition/chapter03}
-
 \include{chapters/Chapter-04-Offline-Parameter-Identification/chapter04}
-
 \include{chapters/Chapter-05-Adaptive-Filtering/chapter05}
-
 \include{chapters/Chapter-06-Observer-Based-Parameter-Estimation/chapter06}
-
 \include{chapters/Chapter-07-Co-Estimation-of-States-and-Parameters/chapter07}
-
 \include{chapters/Chapter-08-Artificial-Intelligence-and-Data-Driven-Estimation/chapter08}
-
 \include{chapters/Chapter-09-Advanced-Stochastic-Gradient-Algorithms/chapter09}
-
 \include{chapters/Chapter-10-Physical-Plant-Modeling-Simulink/chapter10}
-
 \include{chapters/Chapter-11-Smart-BMS-Software-in-the-Loop-Validation/chapter11}
-
 \include{chapters/Chapter-12-Conclusion-and-Future-Prespectives/chapter12}
+
+% =========================
+% Bibliography
+% =========================
+\bibliographystyle{ieeetr}
+\bibliography{references}  
 
 \end{document}
