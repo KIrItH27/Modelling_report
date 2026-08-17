@@ -1,1 +1,460 @@
+﻿\setcounter{page}{85}
 \chapter{Online Parameter Estimation: Adaptive Filtering}
+\label{ch:adaptive_filtering}
+
+Online parameter estimation forms the foundation of real-time monitoring, safety diagnostics, and state estimation in modern Battery Management Systems (BMS). Unlike offline characterization methods, which require long relaxation periods and controlled laboratory environments, online techniques continuously identify battery parameters under dynamic operating conditions. The parameters of an equivalent circuit model (ECM)â€”specifically the ohmic resistance $R_0$, the polarization resistance $R_1$, and the polarization capacitance $C_1$â€”vary with state of charge (SOC), temperature, current rate (C-rate), and degradation state. 
+
+By tracking these parameter variations dynamically, a BMS can update its state observers in real time, leading to highly accurate estimates of SOC and SOH. This chapter presents the theory, derivations, and comparative performance of the primary online parameter estimation techniques: Recursive Least Squares (RLS) and its adaptive variants, Kalman filtering formulations (EKF and UKF), and Particle Filtering.
+
+
+\section{Recursive Least Squares (RLS) and Variants}
+\label{sec:rls_variants}
+
+The Recursive Least Squares (RLS) algorithm is an online version of the offline least squares method. It minimizes a weighted sum of squared prediction errors by updating the parameter estimate recursively as new telemetry data becomes available. RLS is highly valued for embedded systems because of its moderate computational complexity and rapid convergence.
+
+\subsection{First-Order ECM Discretization and Bilinear Transform}
+To apply RLS to a first-order Thevenin ECM, we must first establish the governing equations. The continuous-time equations for the model are:
+\begin{align}
+V_t(t) &= V_{oc}(\text{SOC}) - V_1(t) - I(t) R_0 \label{eq:ch5_vt_cont} \\
+\dot{V}_1(t) &= -\frac{1}{R_1 C_1} V_1(t) + \frac{1}{C_1} I(t) \label{eq:ch5_v1_cont}
+\end{align}
+
+Applying Tustin's bilinear transformation ($s \approx \frac{2}{T_s} \frac{1 - z^{-1}}{1 + z^{-1}}$) to the transfer function of the polarization branch:
+\begin{equation}
+G(s) = \frac{V_1(s)}{I(s)} = \frac{R_1}{R_1 C_1 s + 1}
+\end{equation}
+Substituting $s$ yields the discrete-time transfer function:
+\begin{equation}
+G(z) = \frac{V_1(z)}{I(z)} = \frac{R_1 \frac{T_s(1+z^{-1})}{2(1-z^{-1})}}{R_1 C_1 \frac{2(1-z^{-1})}{T_s(1+z^{-1})} + 1} = \frac{R_1 T_s (1 + z^{-1})}{(2 R_1 C_1 + T_s) - (2 R_1 C_1 - T_s) z^{-1}}
+\end{equation}
+
+By rearranging terms, we obtain the discrete-time AutoRegressive with eXogenous input (ARX) representation:
+\begin{equation}
+y_k = -a_1 y_{k-1} + b_0 u_k + b_1 u_{k-1} + e_k
+\label{eq:ch5_arx}
+\end{equation}
+where $y_k = V_{t,k} - V_{oc}(\text{SOC}_k)$ is the OCV-compensated terminal voltage, $u_k = I_k$ is the applied current (with discharge defined as positive), and $e_k$ represents measurement noise and discretization errors.
+
+The relationship between the discrete coefficients $\{a_1, b_0, b_1\}$ and the continuous-time physical parameters $\{R_0, R_1, C_1\}$ is given by:
+\begin{align}
+a_1 &= -\frac{2 R_1 C_1 - T_s}{2 R_1 C_1 + T_s} \\
+b_0 &= \frac{R_0 (2 R_1 C_1 + T_s) + R_1 T_s}{2 R_1 C_1 + T_s} \\
+b_1 &= \frac{-R_0 (2 R_1 C_1 - T_s) + R_1 T_s}{2 R_1 C_1 + T_s}
+\end{align}
+
+We can reformulate the discrete difference equation~\eqref{eq:ch5_arx} into the standard linear regression form:
+\begin{equation}
+y_k = \boldsymbol{\phi}_k^T \boldsymbol{\theta} + e_k
+\end{equation}
+where $\boldsymbol{\phi}_k$ is the regressor vector and $\boldsymbol{\theta}$ is the parameter vector containing the discrete coefficients:
+\begin{align}
+\boldsymbol{\phi}_k &= \begin{bmatrix} -y_{k-1} & u_k & u_{k-1} \end{bmatrix}^T \\
+\boldsymbol{\theta} &= \begin{bmatrix} a_1 & b_0 & b_1 \end{bmatrix}^T
+\end{align}
+
+Once the parameters are estimated as $\hat{\boldsymbol{\theta}}_k = [\hat{a}_{1,k}, \hat{b}_{0,k}, \hat{b}_{1,k}]^T$, the physical ECM parameters can be extracted using the inverse mapping:
+\begin{align}
+R_{0,k} &= \frac{\hat{b}_{0,k} - \hat{b}_{1,k}}{1 - \hat{a}_{1,k}} \\
+R_{1,k} &= \frac{2(\hat{a}_{1,k} \hat{b}_{0,k} + \hat{b}_{1,k})}{(1 - \hat{a}_{1,k})(1 + \hat{a}_{1,k})} \\
+C_{1,k} &= \frac{T_s (1 + \hat{a}_{1,k})^2}{4(\hat{a}_{1,k} \hat{b}_{0,k} + \hat{b}_{1,k})}
+\end{align}
+
+
+\subsection{Mathematical Derivation of the RLS Algorithm}
+To understand the online recursive estimation formulation, we begin with the batch least squares criteria. Suppose we have collected $k$ samples of data. The goal is to find the parameter vector $\boldsymbol{\theta}$ that minimizes the sum of squared prediction errors:
+\begin{equation}
+J_k(\boldsymbol{\theta}) = \sum_{i=1}^k \left( y_i - \boldsymbol{\phi}_i^T \boldsymbol{\theta} \right)^2 = \left( \mathbf{Y}_k - \mathbf{\Phi}_k \boldsymbol{\theta} \right)^T \left( \mathbf{Y}_k - \mathbf{\Phi}_k \boldsymbol{\theta} \right)
+\end{equation}
+where:
+\begin{equation}
+\mathbf{Y}_k = \begin{bmatrix} y_1 \\ y_2 \\ \vdots \\ y_k \end{bmatrix}, \quad \mathbf{\Phi}_k = \begin{bmatrix} \boldsymbol{\phi}_1^T \\ \boldsymbol{\phi}_2^T \\ \vdots \\ \boldsymbol{\phi}_k^T \end{bmatrix}
+\end{equation}
+
+Taking the gradient of $J_k(\boldsymbol{\theta})$ with respect to $\boldsymbol{\theta}$ and setting it to zero yields:
+\begin{equation}
+\frac{\partial J_k}{\partial \boldsymbol{\theta}} = -2 \mathbf{\Phi}_k^T \mathbf{Y}_k + 2 \mathbf{\Phi}_k^T \mathbf{\Phi}_k \boldsymbol{\theta} = \mathbf{0}
+\end{equation}
+Solving for the optimal estimator $\hat{\boldsymbol{\theta}}_k$:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \left( \mathbf{\Phi}_k^T \mathbf{\Phi}_k \right)^{-1} \mathbf{\Phi}_k^T \mathbf{Y}_k
+\end{equation}
+
+Let us define the information matrix (or inverse covariance matrix) $\mathbf{P}_k^{-1}$:
+\begin{equation}
+\mathbf{P}_k^{-1} = \mathbf{\Phi}_k^T \mathbf{\Phi}_k = \sum_{i=1}^k \boldsymbol{\phi}_i \boldsymbol{\phi}_i^T = \mathbf{P}_{k-1}^{-1} + \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T
+\label{eq:p_inv_update}
+\end{equation}
+
+Similarly, the cross-correlation vector $\mathbf{B}_k$ can be written recursively:
+\begin{equation}
+\mathbf{B}_k = \mathbf{\Phi}_k^T \mathbf{Y}_k = \sum_{i=1}^k \boldsymbol{\phi}_i y_i = \mathbf{B}_{k-1} + \boldsymbol{\phi}_k y_k
+\end{equation}
+
+Now, substituting these recursive representations into the estimator formula:
+\begin{align}
+\hat{\boldsymbol{\theta}}_k &= \mathbf{P}_k \mathbf{B}_k = \mathbf{P}_k \left( \mathbf{B}_{k-1} + \boldsymbol{\phi}_k y_k \right) \nonumber \\
+&= \mathbf{P}_k \left( \mathbf{P}_{k-1}^{-1} \hat{\boldsymbol{\theta}}_{k-1} + \boldsymbol{\phi}_k y_k \right)
+\end{align}
+From~\eqref{eq:p_inv_update}, we have $\mathbf{P}_{k-1}^{-1} = \mathbf{P}_k^{-1} - \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T$. Substituting this gives:
+\begin{align}
+\hat{\boldsymbol{\theta}}_k &= \mathbf{P}_k \left( \left(\mathbf{P}_k^{-1} - \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T\right) \hat{\boldsymbol{\theta}}_{k-1} + \boldsymbol{\phi}_k y_k \right) \nonumber \\
+&= \hat{\boldsymbol{\theta}}_{k-1} - \mathbf{P}_k \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1} + \mathbf{P}_k \boldsymbol{\phi}_k y_k \nonumber \\
+&= \hat{\boldsymbol{\theta}}_{k-1} + \mathbf{P}_k \boldsymbol{\phi}_k \left( y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1} \right)
+\end{align}
+
+Defining the correction gain vector $\mathbf{K}_k = \mathbf{P}_k \boldsymbol{\phi}_k$ and the prediction error $e_k = y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1}$:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \mathbf{K}_k e_k
+\end{equation}
+
+To avoid calculating the matrix inversion in $\mathbf{P}_k = \left(\mathbf{P}_{k-1}^{-1} + \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T\right)^{-1}$ at each step, we apply the Sherman-Morrison-Woodbury matrix inversion lemma:
+\begin{equation}
+\left( \mathbf{A} + \mathbf{U} \mathbf{C} \mathbf{V} \right)^{-1} = \mathbf{A}^{-1} - \mathbf{A}^{-1} \mathbf{U} \left( \mathbf{C}^{-1} + \mathbf{V} \mathbf{A}^{-1} \mathbf{U} \right)^{-1} \mathbf{V} \mathbf{A}^{-1}
+\end{equation}
+Setting $\mathbf{A} = \mathbf{P}_{k-1}^{-1}$, $\mathbf{U} = \boldsymbol{\phi}_k$, $\mathbf{C} = 1$, and $\mathbf{V} = \boldsymbol{\phi}_k^T$, we get:
+\begin{equation}
+\mathbf{P}_k = \mathbf{P}_{k-1} - \frac{\mathbf{P}_{k-1} \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T \mathbf{P}_{k-1}}{1 + \boldsymbol{\phi}_k^T \mathbf{P}_{k-1} \boldsymbol{\phi}_k}
+\end{equation}
+
+This completes the recursive least squares derivation.
+
+
+\subsection{Forgetting Factor Recursive Least Squares (FF-RLS)}
+
+For time-varying parameters, the standard RLS algorithm is modified by introducing an exponential forgetting factor $\lambda \in (0, 1]$. The forgetting factor assigns more weight to recent measurements and exponentially discounts older data. The cost function minimized by FF-RLS at time index $k$ is:
+\begin{equation}
+J_k(\boldsymbol{\theta}) = \sum_{i=1}^k \lambda^{k-i} \left( y_i - \boldsymbol{\phi}_i^T \boldsymbol{\theta} \right)^2
+\label{eq:ffrls_cost}
+\end{equation}
+
+Minimizing this cost function leads to the recursive update equations:
+\begin{align}
+e_k &= y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1} \label{eq:ffrls_err} \\
+\mathbf{K}_k &= \frac{\mathbf{P}_{k-1} \boldsymbol{\phi}_k}{\lambda + \boldsymbol{\phi}_k^T \mathbf{P}_{k-1} \boldsymbol{\phi}_k} \label{eq:ffrls_gain} \\
+\hat{\boldsymbol{\theta}}_k &= \hat{\boldsymbol{\theta}}_{k-1} + \mathbf{K}_k e_k \label{eq:ffrls_theta} \\
+\mathbf{P}_k &= \frac{1}{\lambda} \left[ \mathbf{P}_{k-1} - \mathbf{K}_k \boldsymbol{\phi}_k^T \mathbf{P}_{k-1} \right] \label{eq:ffrls_cov}
+\end{align}
+where $e_k$ is the prior prediction error, $\mathbf{K}_k$ is the gain vector, and $\mathbf{P}_k$ is the covariance matrix.
+
+A central issue with FF-RLS is covariance wind-up. When the system lacks sufficient excitation (e.g., when the vehicle is at a standstill and the current is zero), the regressor vector becomes $\boldsymbol{\phi}_k \approx \mathbf{0}$. In this state, the covariance update equation~\eqref{eq:ffrls_cov} becomes:
+\begin{equation}
+\mathbf{P}_k \approx \frac{1}{\lambda} \mathbf{P}_{k-1}
+\end{equation}
+Because $\lambda < 1$, the covariance matrix $\mathbf{P}_k$ grows exponentially. Any subsequent change in current, or even sensor noise, can trigger wild oscillations or divergence in the parameter estimates.
+
+
+\subsection{Variable Forgetting Factor RLS (VFF-RLS)}
+
+To prevent covariance wind-up, the forgetting factor $\lambda$ can be adjusted dynamically based on the system's operational state and the prediction error. A common approach is to update $\lambda_k$ according to:
+\begin{equation}
+\lambda_k = \lambda_{\min} + (1 - \lambda_{\min}) \cdot 2^{-\rho \cdot e_k^2}
+\label{eq:vff_update}
+\end{equation}
+where $\lambda_{\min}$ is the lower bound of the forgetting factor, and $\rho > 0$ is a sensitivity coefficient. When the prediction error $e_k$ is large, reflecting a change in operating conditions or parameters, $\lambda_k$ drops toward $\lambda_{\min}$ to enable rapid tracking. When the error is small, indicating stable parameters, $\lambda_k$ approaches $1$ to filter out measurement noise.
+
+\subsection{Directional Forgetting RLS (DF-RLS)}
+
+Directional forgetting provides an alternative solution by applying the forgetting factor only in the directions where new information is received. If $\boldsymbol{\phi}_k$ is the current excitation direction, the parameter covariance matrix is updated as:
+\begin{equation}
+\mathbf{P}_k = \mathbf{P}_{k-1} - \frac{\mathbf{P}_{k-1} \boldsymbol{\phi}_k \boldsymbol{\phi}_k^T \mathbf{P}_{k-1}}{\frac{\lambda}{1 - \lambda} + \boldsymbol{\phi}_k^T \mathbf{P}_{k-1} \boldsymbol{\phi}_k}
+\label{eq:dfrls_cov}
+\end{equation}
+This formulation ensures that the covariance matrix does not grow in directions where there is no input signal, successfully eliminating the risk of wind-up under steady-state operation.
+
+
+\subsection{Multi-Innovation Recursive Least Squares (MI-RLS)}
+Standard FF-RLS uses only the current telemetry data sample $(y_k, \boldsymbol{\phi}_k)$ to update the parameters at time step $k$. In dynamic vehicle environments with measurement noise, this single-step innovation can lead to sluggish adaptation or high sensitivity to spikes. The Multi-Innovation RLS (MI-RLS) algorithm utilizes a sliding window of the last $p$ data samples (innovation length $p$) to update the parameter estimate, improving both tracking accuracy and convergence speed.
+
+At step $k$, let the multi-innovation vector $\mathbf{E}(p, k) \in \mathbb{R}^p$ be defined as:
+\begin{equation}
+\mathbf{E}(p, k) = \begin{bmatrix} y_k - \boldsymbol{\phi}_k^T \hat{\boldsymbol{\theta}}_{k-1} \\ y_{k-1} - \boldsymbol{\phi}_{k-1}^T \hat{\boldsymbol{\theta}}_{k-1} \\ \vdots \\ y_{k-p+1} - \boldsymbol{\phi}_{k-p+1}^T \hat{\boldsymbol{\theta}}_{k-1} \end{bmatrix} = \mathbf{Y}(p, k) - \mathbf{\Phi}^T(p, k) \hat{\boldsymbol{\theta}}_{k-1}
+\end{equation}
+where the information vector matrices are:
+\begin{align}
+\mathbf{Y}(p, k) &= \begin{bmatrix} y_k & y_{k-1} & \dots & y_{k-p+1} \end{bmatrix}^T \in \mathbb{R}^p \\
+\mathbf{\Phi}(p, k) &= \begin{bmatrix} \boldsymbol{\phi}_k & \boldsymbol{\phi}_{k-1} & \dots & \boldsymbol{\phi}_{k-p+1} \end{bmatrix} \in \mathbb{R}^{3 \times p}
+\end{align}
+
+The recursive parameter update is then written as:
+\begin{equation}
+\hat{\boldsymbol{\theta}}_k = \hat{\boldsymbol{\theta}}_{k-1} + \mathbf{K}_k(p) \mathbf{E}(p, k)
+\end{equation}
+with the multi-innovation gain matrix:
+\begin{equation}
+\mathbf{K}_k(p) = \mathbf{P}_{k-1} \mathbf{\Phi}(p, k) \left[ \lambda \cdot \mathbf{I}_{p \times p} + \mathbf{\Phi}^T(p, k) \mathbf{P}_{k-1} \mathbf{\Phi}(p, k) \right]^{-1}
+\end{equation}
+and the covariance matrix update:
+\begin{equation}
+\mathbf{P}_k = \frac{1}{u} \left[ \mathbf{P}_{k-1} - \mathbf{K}_k(p) \mathbf{\Phi}^T(p, k) \mathbf{P}_{k-1} \right]
+\end{equation}
+where $u$ is the forgetting parameter.
+
+MI-RLS provides a generalized framework where standard RLS is a special case with $p=1$. As the innovation length $p$ increases, the algorithm utilizes more past information, smoothing out sensor noise and improving transient tracking, though at the expense of calculating a $p \times p$ matrix inversion at each time step.
+
+
+\subsection{Implementation and Initialization of FF-RLS}
+For successful deployment on an embedded microcontroller, the parameters must be initialized properly. The covariance matrix is typically initialized as a diagonal matrix:
+\begin{equation}
+\mathbf{P}_0 = \gamma \cdot \mathbf{I}
+\end{equation}
+where $\gamma$ is a large positive scalar (e.g., $10^3$ to $10^5$), representing a high initial uncertainty. The parameter vector $\hat{\boldsymbol{\theta}}_0$ is initialized based on nominal values (e.g., $R_0 = 0.02~\Omega$, $R_1 = 0.015~\Omega$, $C_1 = 1000~\text{F}$).
+
+Below is the pseudo-code for the implementation of the FF-RLS algorithm:
+
+\begin{verbatim}
+Algorithm 5.1: Forgetting Factor Recursive Least Squares
+Input: Telemetry data {y_k, u_k}, Sampling time T_s, Forgetting factor lambda
+Output: Estimated parameters {R_0, R_1, C_1}
+Initialization:
+  1: theta_hat = [a_1_init, b_0_init, b_1_init]^T
+  2: P = gamma * eye(3)
+Loop for each time step k:
+  3: phi = [-y_{k-1}, u_k, u_{k-1}]^T
+  4: e_k = y_k - phi^T * theta_hat
+  5: K = (P * phi) / (lambda + phi^T * P * phi)
+  6: theta_hat = theta_hat + K * e_k
+  7: P = (1 / lambda) * (P - K * phi^T * P)
+  8: Extract physical parameters:
+       R_0 = (b_0 - b_1) / (1 - a_1)
+       R_1 = 2 * (a_1 * b_0 + b_1) / ((1 - a_1) * (1 + a_1))
+       C_1 = T_s * (1 + a_1)^2 / (4 * (a_1 * b_0 + b_1))
+  9: Store historical variables:
+       y_{k-1} = y_k
+       u_{k-1} = u_k
+\end{verbatim}
+
+\begin{figure}[h!]
+\centering
+\begin{tikzpicture}[node distance=2.5cm, auto, >=latex, thick]
+  \node [draw, rectangle, minimum width=2.5cm, minimum height=1.2cm] (filter) {FF-RLS Algorithm};
+  \node [draw, rectangle, minimum width=2.5cm, minimum height=1.2cm, right of=filter, node distance=4.5cm] (extract) {Parameter Extraction};
+  \node [draw, rectangle, minimum width=2.5cm, minimum height=1.2cm, below of=filter, node distance=2.0cm] (adapt) {Adaptation $\lambda_k$};
+  
+  \draw [->] (-2.5,0) -- node[above] {$y_k, \boldsymbol{\phi}_k$} (filter);
+  \draw [->] (filter) -- node[above] {$\hat{\boldsymbol{\theta}}_k$} (extract);
+  \draw [->] (extract) -- node[above] {$R_{0}, R_{1}, C_{1}$} (8.5,0);
+  \draw [->] (adapt) -- (filter);
+  \draw [->] (filter.south east) -- ++(0,-0.5) -- ++(-4.5,0) |- (adapt.west);
+\end{tikzpicture}
+\caption{Block diagram of the adaptive Recursive Least Squares parameter estimation scheme.}
+\label{fig:rls_block}
+\end{figure}
+
+
+\section{Kalman Filter Formulations}
+\label{sec:kalman_formulations}
+
+Kalman filtering represents a state-space approach to state and parameter estimation. By modeling the system dynamics and sensor noise characteristics explicitly, it computes the optimal state estimate in a minimum mean-square error sense. For battery parameter estimation, the parameters are treated either as additional states (Joint Kalman Filtering) or as a separate system running in parallel (Dual Kalman Filtering).
+
+The system can be described by a discrete-time non-linear state-space model:
+\begin{align}
+\mathbf{x}_k &= f(\mathbf{x}_{k-1}, u_{k-1}) + \mathbf{w}_{k-1} \\
+y_k &= g(\mathbf{x}_k, u_k) + v_k
+\end{align}
+where $\mathbf{x}_k$ is the state vector, $u_k$ is the input current, $y_k$ is the terminal voltage, and $\mathbf{w}_k$ and $v_k$ represent the process and measurement noise with covariances $\mathbf{Q}_k$ and $R_k$, respectively.
+
+
+\subsection{Extended Kalman Filter (EKF)}
+\label{subsec:ekf_details}
+
+The Extended Kalman Filter (EKF) uses first-order Taylor series expansions to linearize the non-linear state-space equations at each time step. For the first-order ECM, the state transition and measurement functions are linearized by calculating their Jacobians:
+\begin{equation}
+\mathbf{F}_{k-1} = \left. \frac{\partial f}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}_{k-1|k-1}}, \quad \mathbf{H}_k = \left. \frac{\partial g}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}_{k|k-1}}
+\end{equation}
+
+For joint estimation, the state vector is augmented as $\mathbf{x}_{a,k} = [\text{SOC}_k, V_{1,k}, R_{0,k}, R_{1,k}, C_{1,k}]^T$. The EKF recursive equations consist of two steps:
+\begin{enumerate}
+    \item \textbf{Prediction Step:}
+    \begin{align}
+    \hat{\mathbf{x}}_{k|k-1} &= f(\hat{\mathbf{x}}_{k-1|k-1}, u_{k-1}) \\
+    \mathbf{P}_{k|k-1} &= \mathbf{F}_{k-1} \mathbf{P}_{k-1|k-1} \mathbf{F}_{k-1}^T + \mathbf{Q}_{k-1}
+    \end{align}
+    \item \textbf{Update Step:}
+    \begin{align}
+    \mathbf{K}_k &= \mathbf{P}_{k|k-1} \mathbf{H}_k^T \left( \mathbf{H}_k \mathbf{P}_{k|k-1} \mathbf{H}_k^T + R_k \right)^{-1} \\
+    \hat{\mathbf{x}}_{k|k} &= \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k \left( y_k - g(\hat{\mathbf{x}}_{k|k-1}, u_k) \right) \\
+    \mathbf{P}_{k|k} &= (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k) \mathbf{P}_{k|k-1}
+    \end{align}
+\end{enumerate}
+
+Linearization introduces approximation errors, which can lead to filter divergence when the non-linearities are severe, such as along the flat OCV curve of $\text{LiFePO}_4$ batteries.
+
+
+\subsection{Unscented Kalman Filter (UKF)}
+\label{subsec:ukf_details}
+
+The Unscented Kalman Filter (UKF) addresses the linearization errors of the EKF by using the Unscented Transform. Rather than linearizing the non-linear equations, UKF propagates a set of deterministically chosen sigma points through the true non-linear equations, capturing the mean and covariance to the second order.
+
+For an $L$-dimensional state vector $\mathbf{x}_k$ with mean $\hat{\mathbf{x}}_k$ and covariance $\mathbf{P}_k$, the $2L+1$ sigma points $\boldsymbol{\mathcal{X}}_k^{(i)}$ and their associated weights $W^{(i)}$ are generated by:
+\begin{align}
+\boldsymbol{\mathcal{X}}_k^{(0)} &= \hat{\mathbf{x}}_k \\
+\boldsymbol{\mathcal{X}}_k^{(i)} &= \hat{\mathbf{x}}_k + \left(\sqrt{(L + \lambda_{ut})\mathbf{P}_k}\right)_i, \quad i=1,\dots,L \\
+\boldsymbol{\mathcal{X}}_k^{(i+L)} &= \hat{\mathbf{x}}_k - \left(\sqrt{(L + \lambda_{ut})\mathbf{P}_k}\right)_i, \quad i=1,\dots,L
+\end{align}
+where $\lambda_{ut} = \alpha^2(L + \kappa) - L$ is a scaling parameter.
+
+The propagated sigma points are then used to calculate the predicted state and covariance:
+\begin{align}
+\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} &= f\left(\boldsymbol{\mathcal{X}}_{k-1}^{(i)}, u_{k-1}\right) \\
+\hat{\mathbf{x}}_{k|k-1} &= \sum_{i=0}^{2L} W_m^{(i)} \boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} \\
+\mathbf{P}_{k|k-1} &= \sum_{i=0}^{2L} W_c^{(i)} \left(\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_{k|k-1}\right)\left(\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_{k|k-1}\right)^T + \mathbf{Q}_{k-1}
+\end{align}
+
+Similarly, the measurement update uses the non-linear measurement function directly:
+\begin{align}
+\mathcal{Y}_{k|k-1}^{(i)} &= g\left(\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)}, u_k\right) \\
+\hat{y}_{k|k-1} &= \sum_{i=0}^{2L} W_m^{(i)} \mathcal{Y}_{k|k-1}^{(i)} \\
+\mathbf{P}_{yy,k} &= \sum_{i=0}^{2L} W_c^{(i)} \left(\mathcal{Y}_{k|k-1}^{(i)} - \hat{y}_{k|k-1}\right)\left(\mathcal{Y}_{k|k-1}^{(i)} - \hat{y}_{k|k-1}\right)^T + R_k \\
+\mathbf{P}_{xy,k} &= \sum_{i=0}^{2L} W_c^{(i)} \left(\boldsymbol{\mathcal{X}}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_{k|k-1}\right)\left(\mathcal{Y}_{k|k-1}^{(i)} - \hat{y}_{k|k-1}\right)^T
+\end{align}
+
+The state update and posterior covariance are then computed via the Kalman gain:
+\begin{align}
+\mathbf{K}_k &= \mathbf{P}_{xy,k} \mathbf{P}_{yy,k}^{-1} \\
+\hat{\mathbf{x}}_{k|k} &= \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k \left( y_k - \hat{y}_{k|k-1} \right) \\
+\mathbf{P}_{k|k} &= \mathbf{P}_{k|k-1} - \mathbf{K}_k \mathbf{P}_{yy,k} \mathbf{K}_k^T
+\end{align}
+
+
+\subsection{Implementation and Parameter Tuning of UKF}
+Tuning the filter matrices $\mathbf{Q}$ and $R$ is crucial for optimal performance. The covariance parameters control the trade-off between the tracking speed of parameter variation and the sensitivity to high-frequency measurement noise:
+\begin{itemize}
+    \item \textbf{Process Noise Covariance $\mathbf{Q}$:} Higher values of $\mathbf{Q}$ allow the filter to follow rapid parameter variations but lead to noisy estimates. Typically, parameters corresponding to slow time-scale variations (e.g., $R_1, C_1$) are assigned smaller process noise values compared to the ohmic resistance $R_0$.
+    \item \textbf{Measurement Noise Covariance $R$:} A higher value of $R$ implies that sensor measurements are heavily corrupted by noise, leading the filter to rely more on the model state prediction and slowing the update convergence.
+\end{itemize}
+
+Below is the pseudo-code for the implementation of the Joint UKF algorithm:
+
+\begin{verbatim}
+Algorithm 5.2: Joint Unscented Kalman Filter
+Input: Telemetry data {y_k, u_k}, Process covariance Q, Measurement covariance R
+Output: Joint state estimate x_hat_k
+Initialization:
+  1: x_hat = [SOC_0, V_1_0, R_0_0, R_1_0, C_1_0]^T
+  2: P = P_0
+Loop for each time step k:
+  3: Generate sigma points X_k-1 using x_hat and P
+  4: Propagate sigma points through state equation:
+       X_k|k-1 = f(X_k-1, u_k-1)
+  5: Compute predicted state mean x_hat_k|k-1 and covariance P_k|k-1
+  6: Generate observation sigma points:
+       Y_k|k-1 = g(X_k|k-1, u_k)
+  7: Compute predicted measurement mean y_hat and covariance P_yy
+  8: Compute cross-covariance P_xy
+  9: Compute Kalman gain: K = P_xy * inv(P_yy)
+ 10: Update joint state: x_hat = x_hat_k|k-1 + K * (y_k - y_hat)
+ 11: Update covariance: P = P_k|k-1 - K * P_yy * K^T
+\end{verbatim}
+
+
+\section{Particle Filtering Techniques}
+\label{sec:particle_filtering}
+
+For systems characterized by highly non-linear dynamics or non-Gaussian noise distributions, Particle Filtering (also known as Sequential Monte Carlo) offers a robust solution. It represents the posterior probability density function $p(\mathbf{x}_k \mid y_{1:k})$ using a set of $N_p$ weighted random samples, or particles:
+\begin{equation}
+p(\mathbf{x}_k \mid y_{1:k}) \approx \sum_{j=1}^{N_p} w_k^{(j)} \delta\left(\mathbf{x}_k - \mathbf{x}_k^{(j)}\right)
+\end{equation}
+where $\mathbf{x}_k^{(j)}$ is the state of particle $j$, and $w_k^{(j)}$ is its normalized weight.
+
+The weights are updated recursively based on the measurement likelihood:
+\begin{equation}
+w_k^{(j)} \propto w_{k-1}^{(j)} \cdot p\left(y_k \mid \mathbf{x}_k^{(j)}\right)
+\end{equation}
+For Gaussian measurement noise, the likelihood is:
+\begin{equation}
+p\left(y_k \mid \mathbf{x}_k^{(j)}\right) = \frac{1}{\sqrt{2\pi R_k}} \exp\left( -\frac{\left( y_k - g(\mathbf{x}_k^{(j)}, u_k) \right)^2}{2 R_k} \right)
+\end{equation}
+
+A fundamental challenge in particle filtering is weight degeneracy, where almost all particles eventually receive negligible weights. To monitor degeneracy, the effective sample size is estimated using:
+\begin{equation}
+N_{\text{eff}} = \frac{1}{\sum_{j=1}^{N_p} \left( w_k^{(j)} \right)^2}
+\end{equation}
+When $N_{\text{eff}}$ falls below a predefined threshold $N_{\text{thresh}} = N_p / 2$, resampling is performed to replace low-weight particles with copies of high-weight particles.
+
+
+\subsection{Systematic Resampling Algorithm}
+The Systematic Resampling scheme divides the interval $[0, 1)$ into $N_p$ equal subintervals, and a single random number is drawn to select particles. This reduces computational complexity compared to multinomial resampling.
+
+Below is the pseudo-code for Systematic Resampling:
+
+\begin{verbatim}
+Algorithm 5.3: Systematic Resampling
+Input: Particle set {x_k^(j)}, Weights {w_k^(j)}
+Output: Resampled particle set {x_k^*^(j)}
+  1: Compute cumulative sum of weights: c = cumsum(w_k)
+  2: Draw a single starting point: u_1 ~ U(0, 1/N_p)
+  3: i = 1
+  4: For j = 1 to N_p:
+  5:   u_j = u_1 + (j - 1) / N_p
+  6:   While u_j > c(i):
+  7:     i = i + 1
+  8:   x_k^*^(j) = x_k^(i)
+  9:   w_k^*^(j) = 1 / N_p
+\end{verbatim}
+
+
+\subsection{Resampling Techniques Comparison}
+Several resampling strategies exist to mitigate particle depletion. The main methods are Multinomial, Systematic, Stratified, and Residual resampling. Table~\ref{tab:resampling_comparison} compares these techniques based on computational complexity and resampling variance.
+
+\begin{table}[h!]
+\centering
+\caption{Comparison of resampling methods for Particle Filters.}
+\label{tab:resampling_comparison}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|X|}
+\hline
+\textbf{Resampling Method} & \textbf{Complexity} & \textbf{Variance} & \textbf{Suitability for BMS Hardware} \\
+\hline
+Multinomial & $\mathcal{O}(N_p \log N_p)$ & High & Poor due to sorting/searching overhead. \\
+\hline
+Systematic & $\mathcal{O}(N_p)$ & Low & Excellent; very simple loop structures. \\
+\hline
+Stratified & $\mathcal{O}(N_p)$ & Low & Good; slightly more random draws than systematic. \\
+\hline
+Residual & $\mathcal{O}(N_p)$ & Very Low & Moderate; requires two stages of allocations. \\
+\hline
+\end{tabularx}
+\end{table}
+
+This ensures that particles with large weights are replicated, while those with very low weights are eliminated.
+
+
+\section{Summary}
+\label{sec:ch5_summary}
+
+Online parameter estimation is essential for maintaining battery model accuracy under varying conditions. The choices range from computationally lightweight RLS variants to highly robust but complex Particle Filters. Table~\ref{tab:ch5_summary} summarizes the characteristics of these algorithms.
+
+\begin{table}[h!]
+\centering
+\caption{Characteristics of online parameter estimation algorithms.}
+\label{tab:ch5_summary}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{|l|c|c|X|}
+\hline
+\textbf{Algorithm} & \textbf{Complexity} & \textbf{Noise Class} & \textbf{Key Advantages / Disadvantages} \\
+\hline
+RLS / FF-RLS & Low & Gaussian & Fast convergence; susceptible to covariance wind-up. \\
+\hline
+VFF-RLS / DF-RLS & Low-Medium & Gaussian & Prevents covariance wind-up dynamically. \\
+\hline
+EKF & Medium & Gaussian & Simple state-space structure; suffers from linearization errors. \\
+\hline
+UKF & Medium-High & Gaussian & High accuracy; avoids analytical Jacobian calculations. \\
+\hline
+Particle Filter & High & Non-Gaussian & Handles arbitrary non-linearities; high computational load. \\
+\hline
+\end{tabularx}
+\end{table}
+
+
+\subsection{Algorithm Selection for BMS}
+
+The choice of parameter estimation algorithm for an embedded Battery Management System depends on the balance between processing constraints and estimation requirements:
+\begin{itemize}
+    \item \textbf{Low-Cost Microcontrollers:} Variable Forgetting Factor RLS represents the most practical choice, requiring minimal RAM and execution time.
+    \item \textbf{High-Performance BMS:} Dual or Joint Unscented Kalman Filtering provides the optimal balance of estimation accuracy and tracking speed under dynamic conditions.
+\end{itemize}
+
+From a system-design perspective, the RLS, EKF, UKF, and particle filter families are not competing paradigms but complementary tools that occupy different points in the accuracy-versus-complexity trade-off. In low-cost production hardware, the emphasis is on numerical robustness and deterministic execution. In research-oriented or high-performance platforms, the focus shifts toward improving convergence speed, reducing linearization error, and managing non-Gaussian uncertainty. This chapter therefore establishes the core mathematical and engineering intuition that underpins the observer-based and co-estimation frameworks developed later in the thesis.
+
+This concludes the review of online adaptive filtering parameter estimation. Observers, presented in Chapter~6, offer an alternative, control-oriented perspective.
