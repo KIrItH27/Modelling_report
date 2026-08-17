@@ -1,1 +1,243 @@
-﻿\chapter{Experimental Characterization and Data Acquisition}
+\chapter{Experimental Characterization and Data Acquisition}
+\label{chap:characterization}
+
+\section{Introduction to Lab Profiling}
+\label{sec:lab_profiling}
+
+Chapter~2 established the model structures -- equivalent circuit models (ECMs), the pseudo-two-dimensional (P2D) electrochemical model, the single particle model (SPM), and their thermal-coupled extensions -- onto which the parameter estimation methods of Chapters~4 through~9 are applied. Every one of those methods, whether offline curve fitting or online recursive filtering, requires measured data: current, voltage, and (where available) temperature records collected under controlled or semi-controlled excitation of a physical cell. This chapter describes the laboratory characterization procedures that produce that data, and, in doing so, closes the loop between the mathematical structures of Chapter~2 and the estimation algorithms that follow.
+
+\subsection{Purpose and Scope of Laboratory Profiling}
+
+Laboratory profiling, in the sense used throughout this chapter, refers to the deliberate application of a controlled current, voltage, or small-signal perturbation to a cell held in a defined environmental condition (temperature, and where applicable, mechanical fixturing), for the specific purpose of extracting one or more of the model parameters introduced in Chapter~2. This is distinct from -- though related to -- \emph{performance testing} (capacity, energy, and power rating under application-representative duty cycles) and from \emph{life testing} (calendar and cycle aging under accelerated or field-representative conditions), neither of which is the primary focus of this report, consistent with the parameter-estimation scope defined in Chapter~1.
+
+Four laboratory procedures are developed in this chapter, each targeting a distinct subset of the parameters introduced in Chapter~2:
+
+\begin{itemize}
+	\item \textbf{OCV-SOC characterization} (Section~\ref{sec:ocv_soc}) establishes the equilibrium open-circuit voltage function $V_{oc}(z,T)$ that appears in every ECM topology of Section~2.2 and in the equilibrium potential terms $U_p(\cdot), U_n(\cdot)$ of the electrochemical models of Section~2.3.
+	\item \textbf{Hybrid Pulse Power Characterization (HPPC)} (Section~\ref{sec:hppc}) is the primary source of the transient ECM parameters $R_0$, $R_1, C_1$, and $R_2, C_2$ developed in Sections~2.2.2--2.2.3, extracted using the pulse-response relations derived in Chapter~2.
+	\item \textbf{Electrochemical Impedance Spectroscopy (EIS)} (Section~\ref{sec:eis}) provides a frequency-domain characterization of the cell's internal impedance, offering a complementary (and, for certain parameters, higher-resolution) route to ohmic and charge-transfer resistance, double-layer capacitance, and diffusion-related impedance elements.
+	\item \textbf{Sensor noise characterization and data pre-processing} (Section~\ref{sec:noise_preprocessing}) addresses the practical reality that none of the preceding measurements is noise-free, and establishes the signal-processing steps by which raw sensor data is converted into the clean current/voltage/temperature records assumed, implicitly, throughout Chapter~2 and required by the estimation algorithms of Chapters~4 through~9.
+
+\end{itemize}
+
+\subsection{Relationship to the Estimation Chapters}
+
+It is useful to state explicitly, before developing each procedure in detail, how the data produced by this chapter feeds into the two estimation paradigms distinguished in Chapter~1 and developed in Chapters~4 through~9. Offline identification methods (Chapter~4) consume the characterization data of this chapter directly and in full: an HPPC data set, for instance, is processed as a complete, static data set using the regression and optimization techniques of Chapter~4 to produce a single (or SOC/temperature-indexed) parameter estimate. Online methods (Chapters~5 through~7), by contrast, do not operate on laboratory characterization data at all in normal operation; they instead process the same class of current/voltage measurements as they are generated during in-field use, using the recursive structures introduced in Chapter~2 (Equations~2.16 and~2.20). The laboratory procedures of this chapter therefore serve two purposes with respect to online methods: they provide the initial parameter set with which an online estimator is initialized, and they provide the independent validation data set (Section~\ref{sssec:hppc_validation}) against which online estimates are subsequently checked.
+
+\subsection{Test Equipment and Environmental Control}
+
+Although a detailed treatment of laboratory instrumentation lies outside the scope of this report, three environmental and instrumentation considerations recur across all four procedures developed below and are stated once here rather than repeated in each section:
+
+\begin{enumerate}
+	\item \textbf{Temperature control.} Because every ECM and electrochemical model parameter introduced in Chapter~2 depends on temperature (Section~2.4), all characterization tests in this chapter are understood to be performed inside a temperature-controlled environmental chamber, with the cell allowed to reach thermal equilibrium with the chamber set-point before each measurement or measurement sequence begins.
+	\item \textbf{Cycler/potentiostat capability.} Coulomb-counting-based tests (OCV-SOC, HPPC) are performed using a battery cycler capable of programmable constant-current and constant-voltage steps with accurate current and voltage measurement, whereas EIS testing requires a potentiostat/galvanostat capable of applying a small-amplitude sinusoidal perturbation and resolving the resulting current or voltage response across the required frequency range (Section~\ref{sec:eis}).
+	\item \textbf{Fixturing and connection.} Four-wire (Kelvin) sensing is assumed throughout, so that the voltage measured at the cell terminals is not corrupted by the voltage drop across the current-carrying leads -- a distinction that becomes particularly important for the small-signal EIS measurements of Section~\ref{sec:eis}, where lead and contact impedance can otherwise dominate the measured signal at high frequency.
+\end{enumerate}
+
+\subsection{Chapter Roadmap}
+
+Section~\ref{sec:ocv_soc} develops the OCV-SOC characterization procedure, including the low-current and incremental methods used to approximate the true equilibrium relationship, and addresses the hysteresis phenomenon that complicates its measurement. Section~\ref{sec:hppc} develops the HPPC test protocol, its pulse-current design, and the direct link between its measured voltage response and the ECM parameters of Chapter~2. Section~\ref{sec:eis} introduces EIS as a frequency-domain complement to HPPC, developing the Randles-circuit interpretation of the resulting Nyquist plot. Section~\ref{sec:noise_preprocessing} addresses sensor noise characterization and the pre-processing steps -- filtering, outlier rejection, resampling, and synchronization -- that convert raw instrumentation output into estimation-ready data. Section~\ref{sec:summary_ch3} closes the chapter with a synthesis of how the four procedures jointly populate the parameter tables of Chapter~2, and bridges to the offline identification methods of Chapter~4.
+
+\section{Open Circuit Voltage (OCV) vs. SOC Relationship}
+\label{sec:ocv_soc}
+
+\subsection{Physical Basis and Definition}
+
+The open-circuit voltage of a cell at a given SOC is, by definition, the terminal voltage measured after the cell has been allowed to relax, at open circuit, to full thermodynamic (or at least electrochemical) equilibrium following any preceding current flow. At true equilibrium, $V_{oc}(z)$ reflects only the equilibrium electrode potentials of the positive and negative active materials at their respective states of lithiation, with all overpotential (ohmic, charge-transfer, and diffusion) contributions -- the $I R_0$ and RC-branch terms of Equation~2.1 -- having decayed to zero. This is precisely the quantity that appears as the voltage-source term $V_{oc}(z,T)$ in every ECM topology of Chapter~2, Section~2.2, and it is therefore the single most fundamental parameter characterized in this chapter: every subsequent HPPC-derived resistance and capacitance value (Section~\ref{sec:hppc}) is defined \emph{relative to} the OCV curve established here.
+
+\subsection{Test Procedure: Low-Current (Quasi-Equilibrium) Method}
+\label{ssec:ocv_lowcurrent}
+
+Because true equilibrium relaxation can require many hours per SOC point -- impractical for characterizing the full SOC range at a useful number of points -- two practical approximations are used in place of the ideal (infinite-rest) procedure. The first, referred to here as the low-current or quasi-equilibrium method, discharges (or charges) the cell at a very low, near-constant C-rate (typically C/20 to C/40), on the reasoning that at sufficiently low current the ohmic and polarization overpotentials of Equation~2.1 become small relative to the OCV itself, so that the measured terminal voltage during the slow sweep approximates $V_{oc}(z)$ directly, without requiring a full pause-and-relax step at every SOC point. The SOC associated with each measured voltage sample is computed by Coulomb counting (Chapter~2, Equation~2.3) referenced to the cell's measured total capacity over the full sweep \cite{ocv_char_fuel_gauging_2014}.
+
+\subsection{Test Procedure: Incremental (Pulse-and-Rest) Method}
+\label{ssec:ocv_incremental}
+
+The second, more accurate but more time-consuming approach, referred to as the incremental or pulse-and-rest method, discharges (or charges) the cell in discrete SOC increments (commonly 5\% or 10\% of nominal capacity), followed at each increment by a rest period sufficiently long for the terminal voltage to relax to within a specified tolerance of its equilibrium value; the relaxed terminal voltage at the end of each rest period is taken as the OCV sample at that SOC. The Coulomb-counting relation (Chapter~2, Equation~2.3) is again used to track SOC between increments, referenced to a full-capacity discharge performed once at the beginning of the test, and the SOC of the battery for OCV-SOC characterization is generally computed through Coulomb counting between the deliberately small currents used to step between OCV measurement points \cite{ocv_char_fuel_gauging_2014}. This procedure is more accurate than the low-current sweep because the rest periods allow genuine relaxation of the polarization overpotentials, but it is correspondingly slower: a full-range characterization at 5\% SOC increments with multi-hour rest periods per point can require several days of continuous testing per temperature condition.
+
+\subsection{Curve Fitting of the OCV-SOC Relationship}
+\label{ssec:ocv_fitting}
+
+The discrete voltage-SOC pairs produced by either procedure above must be converted into a continuous, differentiable function $V_{oc}(z)$ (or $V_{oc}(z,T)$, if the procedure is repeated across a temperature grid) suitable for use in the ECM structures of Chapter~2 and, in particular, for the entropic-coefficient discussion of Chapter~2, Section~2.4, which requires $\partial V_{oc}/\partial T$ to be well defined. Common functional forms used in the literature include high-order polynomials, combinations of exponential and logarithmic terms motivated by the Nernst equation, and sums of sinusoidal terms; a recent comparative study of OCV-SOC modeling approaches across exponential, polynomial, sum-of-sine, and Gaussian functional forms found that accurate fitting in the low-SOC region is consistently the most difficult part of the curve to capture well, a region that is also disproportionately important for state-of-charge estimation accuracy near cut-off \cite{ocv_temp_mdpi_2018}. Whatever functional form is chosen, two properties should be verified before the fitted curve is accepted for use in the ECM structures of Chapter~2: monotonicity of $V_{oc}(z)$ over the SOC range where the ECM will be operated (violations create ambiguity when the ECM's estimation algorithms, Chapter~5 onward, attempt to infer $z$ from a measured voltage), and smoothness of the fitted derivative $dV_{oc}/dz$, since this derivative appears directly in the observability analysis of Kalman-filter-based SOC/parameter estimators developed in Chapter~5.
+
+\subsection{OCV Hysteresis}
+\label{ssec:ocv_hysteresis}
+
+A complication that must be addressed explicitly, and that is easy to overlook if the OCV-SOC relationship is assumed to be a single-valued function of SOC alone, is voltage hysteresis: the open-circuit voltage measured after a preceding \emph{charge} step is generally not identical to the open-circuit voltage measured, at the same SOC, after a preceding \emph{discharge} step. This path dependence of OCV is a distinctive characteristic of many lithium-ion cell chemistries \cite{ocv_hysteresis_sciencedirect_2015}, and it is known to be particularly pronounced for certain graphite and silicon-graphite anode materials \cite{hysteresis_probability_ecm_2024}. The relationship between OCV and SOC is used pervasively in battery state estimation and safety management, and the hysteresis phenomenon is precisely what makes obtaining a single, unambiguous OCV-SOC curve difficult in practice \cite{hysteresis_asymmetric_sciencedirect_2022}.
+
+\subsubsection{Origin and Characterization}
+
+Voltage hysteresis is generally understood to be a short-term, path-dependent phenomenon -- the instantaneous OCV depends on the recent charge/discharge history of the cell -- but it is also observed, for some chemistries, to persist even after very long open-circuit relaxation, indicating a genuine multi-valued equilibrium behavior rather than a merely slow relaxation artifact \cite{hysteresis_probability_ecm_2024}. Reported quantification studies show that measured battery capacity, and the associated OCV curve, can vary by several percent depending on which test procedure and hysteresis-handling convention is used \cite{ocv_hysteresis_sciencedirect_2015}, and hysteresis window magnitudes as large as 150~mV have been reported for certain silicon-containing anode chemistries \cite{hysteresis_tch_sciencedirect_2024}. Because hysteresis directly affects the accuracy with which SOC can be inferred from a measured terminal voltage, it is treated in the estimation literature as a first-class modeling concern rather than a mere source of measurement noise \cite{hysteresis_electronics_2019}.
+
+\subsubsection{Practical Handling Within This Report's Scope}
+
+Two practical conventions are used to manage OCV hysteresis within the OCV-SOC characterization procedures of Sections~\ref{ssec:ocv_lowcurrent}--\ref{ssec:ocv_incremental}, consistent with common laboratory practice: first, the low-current or incremental procedure is performed separately in the charge and discharge directions, producing two curves $V_{oc}^{\text{chg}}(z)$ and $V_{oc}^{\text{dis}}(z)$ whose average is sometimes used as a hysteresis-marginalized estimate of the "true" equilibrium OCV, a convention explicitly adopted in fuel-gauging-oriented OCV characterization work by ensuring symmetric charging and discharging test data \cite{ocv_char_fuel_gauging_2014}; second, where the ECM's intended application requires higher fidelity than this averaging convention provides -- for instance, applications with frequent, shallow charge/discharge reversals such as regenerative braking in electric vehicles -- a dedicated hysteresis sub-model (a first-order hysteresis state, or a more detailed asymmetric or trajectory-based hysteresis operator) can be appended to the ECM structures of Chapter~2, as documented in the recent literature on hysteresis-aware SOC estimation \cite{hysteresis_electronics_2019,hysteresis_asymmetric_sciencedirect_2022,hysteresis_tch_sciencedirect_2024}. This report does not develop a hysteresis sub-model in full mathematical detail, consistent with the ECM scope fixed in Chapter~2 (which retains the single-valued $V_{oc}(z)$ assumption stated in Chapter~2, Section~2.2.1), but the possibility is flagged here since it directly affects the accuracy ceiling of any OCV-referenced SOC estimator built on the models of Chapter~2.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Comparison of OCV-SOC characterization procedures.}
+	\label{tab:ocv_methods}
+	\begin{tabular}{p{3.0cm}p{4.4cm}p{4.4cm}}
+		\toprule
+		Attribute & Low-current (quasi-equilibrium) & Incremental (pulse-and-rest) \\
+		\midrule
+		Typical current & C/20 to C/40, continuous & Larger step current, applied briefly per increment \\
+		Rest periods & None (continuous sweep) & Required at each SOC increment (often 1--3~h or longer) \\
+		Total test duration & Hours (single continuous sweep) & Can extend to multiple days per temperature \\
+		Accuracy near true equilibrium & Approximate (residual overpotential remains) & High (approaches true equilibrium, given sufficient rest) \\
+		Typical use in this report's context & Rapid characterization; screening & Reference-quality $V_{oc}(z)$ curve for ECM parameterization \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\section{Hybrid Pulse Power Characterization (HPPC) Test}
+\label{sec:hppc}
+
+\subsection{Origin and Purpose}
+
+The Hybrid Pulse Power Characterization test is the standard laboratory procedure for characterizing a cell's dynamic power capability and internal resistance across its usable SOC and temperature range, and it is the primary source of the transient ECM parameters ($R_0$, $R_1, C_1$, and, where a second-order model is required, $R_2, C_2$) developed in Chapter~2, Sections~2.2.2--2.2.3. The HPPC protocol originates from the joint USABC/PNGV battery testing development programme and was formalized in the U.S. Department of Energy's FreedomCAR Battery Test Manual for Power-Assist Hybrid Electric Vehicles, which defines the pulse-current profile and the discharge/regenerative power-capability calculations derived from it \cite{freedomcar_manual}. It remains, per recent characterization literature, the most widely used cell-level resistance characterization technique in automotive battery engineering \cite{batterydesign_hppc}.
+
+\subsection{Test Profile}
+\label{ssec:hppc_profile}
+
+A complete HPPC test consists of a sequence of discharge-charge (or, in the FreedomCAR terminology, discharge-regenerative) current pulse pairs applied to the cell at a series of SOC set-points spanning its usable range, at a given, controlled temperature \cite{matlab_hppc_example}. The canonical single-point pulse sequence, following the structure reported in the literature \cite{freedomcar_manual,dmd_hppc_arxiv}, proceeds as follows:
+
+\begin{enumerate}
+	\item \textbf{Discharge pulse.} A constant-current discharge pulse of specified magnitude (commonly sized to a target C-rate or to the pack's rated power-assist current) is applied for a fixed duration, typically on the order of $10$ seconds in the original FreedomCAR protocol, while terminal voltage is logged at high sampling rate.
+	\item \textbf{Rest.} The cell is allowed to rest at open circuit for a period sufficient for the voltage transient associated with the RC branch(es) of Chapter~2 to substantially decay -- commonly on the order of minutes, though some reported protocols use rest periods of one to several hours specifically to ensure electrochemical and thermal equilibrium before the next SOC step \cite{lib_ev_modeling_ecm_review}.
+	\item \textbf{Charge (regenerative) pulse.} A constant-current charge pulse, generally of smaller magnitude and/or shorter duration than the discharge pulse (reflecting the shorter duration typical of regenerative braking events in the automotive application that motivated the original protocol), is applied, again with high-rate voltage logging.
+	\item \textbf{Rest.} A second rest period follows the charge pulse.
+	\item \textbf{SOC decrement.} A constant-current discharge segment (commonly at a moderate rate such as C/3) removes a fixed fraction of the cell's nominal capacity (e.g. 10\%), stepping the cell to the next lower SOC set-point, again followed by a rest period to allow thermal and electrochemical equilibration before the pulse pair at Step~1 is repeated \cite{lib_ev_modeling_ecm_review}.
+\end{enumerate}
+
+This sequence is repeated across the full usable SOC range (commonly 100\% down to 10\% or lower, in 10\% or finer increments), and the entire sequence is in turn repeated at each temperature set-point required by the intended application, since every ECM parameter extracted from the pulse response (Section~\ref{ssec:hppc_extraction}) is understood, per Chapter~2, Section~2.4, to be temperature-dependent. A representative implementation reported in the recent literature applies a 10~A, 10~second discharge pulse followed by a 3-minute rest, a 5~A, 20~second charge pulse followed by a 2-minute rest, and a moderate-rate SOC-decrement discharge between pulse pairs, illustrating the general structure described above on a specific cell \cite{dmd_hppc_arxiv}.
+
+\subsection{Parameter Extraction from HPPC Data}
+\label{ssec:hppc_extraction}
+
+The voltage response to each discharge/charge pulse pair is processed using exactly the extraction logic developed in Chapter~2 (Sections~2.2.2--2.2.3 and the pseudocode of Section~2.2.5): the instantaneous voltage step at pulse onset (and removal) yields $R_0$, and the subsequent exponential relaxation, fitted via the nonlinear least-squares methods of Chapter~4, yields the RC-branch parameters $(R_1, C_1)$ or $(R_1,C_1,R_2,C_2)$ depending on the chosen ECM order. Because the HPPC protocol applies both discharge and charge pulses at each SOC point, it additionally supports separate identification of discharge-direction and charge-direction resistance values, which is useful both for capturing any residual current-direction asymmetry not otherwise captured by the ECM structure, and for cross-checking against the charge/discharge OCV curves of Section~\ref{ssec:ocv_hysteresis}.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Parameters of Chapter~2's ECM structures obtained from HPPC data, and the specific HPPC test segment used to extract each.}
+	\label{tab:hppc_extraction_map}
+	\begin{tabular}{p{2.0cm}p{5.4cm}p{4.4cm}}
+		\toprule
+		Parameter & HPPC segment used & Extraction relation (Chapter~2) \\
+		\midrule
+		$R_0$ & Instantaneous voltage step at pulse onset/removal & Sec.~2.2.2, pulse-response discussion \\
+		$R_1, C_1$ & Fast component of post-pulse relaxation & Eq.~2.9 (single-exponential fit) \\
+		$R_2, C_2$ (if 2RC model used) & Slow component of post-pulse relaxation & Sec.~2.2.3 offline extraction procedure \\
+		$V_{oc}(z)$ (cross-check) & Fully relaxed voltage at end of each rest period & Sec.~\ref{sec:ocv_soc} (independent OCV test preferred) \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Power Capability Calculations}
+
+Beyond ECM parameter extraction, the original purpose of the HPPC protocol -- and the reason for its adoption in the automotive testing standards from which it originates -- is the direct calculation of discharge and regenerative (charge) power capability as a function of SOC (or, in the FreedomCAR terminology, depth of discharge). The test establishes the minimum terminal voltage reached at the end of a discharge pulse, and the maximum terminal voltage reached at the end of a regenerative pulse, at each SOC set-point; together with the applied pulse currents and the cell's minimum/maximum voltage limits, these values are used to compute the maximum sustainable discharge and regenerative power at each SOC, from which the usable energy window (the SOC range over which the cell meets a specified minimum power target) can in turn be determined \cite{freedomcar_manual}. This power-capability information is directly relevant to the state-of-power (SOP) estimation problem introduced in Chapter~1 as a companion state-estimation quantity to SOC and SOH, and it is revisited in that context, using the ECM parameters extracted in this chapter, in later chapters of this report.
+
+\subsection{Validation Practice}
+\label{sssec:hppc_validation}
+
+Consistent with the validation principle established in Chapter~2 (Section~2.2.5) and reiterated for electrochemical models in Chapter~2, Section~2.3, a complete HPPC-based ECM parameterization is not considered validated until the resulting parameter set -- $R_0(z,T)$, $R_1(z,T)$, $C_1(z,T)$, and so on -- is used to simulate the cell's terminal voltage response to a current profile \emph{not} used in the extraction process, most commonly a standardized or application-representative dynamic drive cycle, and the simulated response is compared against independently measured terminal voltage under that same profile. This validation step is what ultimately determines whether the ECM order selected in Chapter~2 (Rint, Thevenin, or dual-polarization) is sufficient for the intended application, and a persistent, systematic mismatch under dynamic validation -- as opposed to a mismatch confined to the pulse-response fit itself -- is one of the practical symptoms that motivates moving to a higher-order ECM or to the electrochemical models of Chapter~2, Section~2.3.
+
+\subsection{Degradation Tracking via Repeated HPPC}
+
+Because $R_0$ and the RC-branch parameters extracted from HPPC data are known to increase systematically with cell aging, the HPPC procedure is also commonly repeated at intervals throughout a cell's life (for example, after every fixed number of charge/discharge cycles) specifically to track resistance growth as an aging indicator; because resistance growth associated with degradation often precedes noticeable capacity loss, pulse-derived resistance metrics of exactly the kind extracted in this section serve, in the broader diagnostics literature, as an early and reliable indicator of degradation, particularly valuable for the rapid screening of retired or second-life cells \cite{retired_battery_review_arxiv}. This repeated-HPPC practice is the experimental data source underlying the aging-dependent parameter drift discussed qualitatively in Chapter~2 and developed formally as an estimation problem in Chapter~7.
+
+\section{Electrochemical Impedance Spectroscopy (EIS)}
+\label{sec:eis}
+
+\subsection{Motivation and Relationship to HPPC}
+
+Where the HPPC test of Section~\ref{sec:hppc} characterizes the cell's impedance in the time domain, via its response to discrete current pulses, Electrochemical Impedance Spectroscopy characterizes the same underlying impedance in the frequency domain, via the cell's response to a small-amplitude sinusoidal current (or voltage) perturbation swept across a range of frequencies. The two techniques are complementary rather than competing: HPPC is faster, requires simpler instrumentation, and directly exercises the cell under conditions closer to its intended application, whereas EIS offers substantially higher resolution in separating processes that occur on similar but distinguishable timescales -- precisely the separation of fast (charge-transfer/double-layer) and slow (diffusion-related) polarization modes that was flagged, in the time domain, as a significant identifiability challenge for the dual-polarization ECM in Chapter~2, Section~2.2.3.
+
+\subsection{Measurement Principle}
+\label{ssec:eis_principle}
+
+An EIS measurement applies a small-amplitude sinusoidal current perturbation $i(t) = I_0 \sin(\omega t)$ (or, in potentiostatic mode, a voltage perturbation) at a series of discrete angular frequencies $\omega$, and measures the resulting voltage (or current) response, which, for a linear or linearized system, is itself sinusoidal at the same frequency but shifted in phase and scaled in amplitude. A small perturbation current is injected across a wide frequency range -- commonly from several kHz down to fractions of a Hz, or lower -- and the measured time-domain voltage and current are converted to the frequency domain, from which the complex impedance $Z(\omega) = V(\omega)/I(\omega)$ is obtained at each measured frequency \cite{ecm_eis_preprint_2024}. The perturbation amplitude is kept small enough that the cell's response remains within its linear (or quasi-linear) operating regime around the chosen DC bias point (typically open circuit, or a small superimposed DC current), which is what permits the resulting impedance to be interpreted using linear circuit-theoretic equivalent circuit models, in a manner directly analogous to (though numerically distinct from) the small-signal RC linearization assumption already noted for the ECM framework in Chapter~2, Section~2.2.1.
+
+\subsection{The Nyquist Plot and Randles-Type Equivalent Circuit Interpretation}
+\label{ssec:eis_nyquist}
+
+The measured impedance spectrum $Z(\omega) = Z_{\text{re}}(\omega) + j Z_{\text{im}}(\omega)$ is conventionally displayed as a Nyquist plot, with $-Z_{\text{im}}$ plotted against $Z_{\text{re}}$ across the swept frequency range. For a lithium-ion cell, the resulting curve is commonly interpreted using a Randles-type equivalent circuit, which is also, notably, an equivalent circuit model in the same structural family as the ECMs of Chapter~2 -- but parameterized and identified in the frequency domain rather than the time domain. The Randles circuit is frequently employed to represent the coupled charge-transfer, double-layer, and mass-transport processes at an electrode-electrolyte interface \cite{eis_review_aip_2025}, and, in its form applied to lithium-ion cells, is generally composed of: a series ohmic resistance $R_s$ (electrolyte and contact resistance, directly analogous to the ECM's $R_0$); one or more parallel resistor-capacitor (or resistor-constant-phase-element) combinations representing charge-transfer resistance and double-layer capacitance at each electrode (directly analogous to the ECM's RC branches); and, at low frequency, a Warburg-type diffusion impedance element representing semi-infinite or finite-length solid-state diffusion.
+
+A typical measured Nyquist spectrum for a lithium-ion cell exhibits three qualitatively distinct frequency regions, consistent with reported EIS characterizations of lithium-ion cells: an inductive loop at high frequency (above roughly 1~kHz, generally attributed to cell and lead inductance rather than an electrochemical process), a distorted semicircle in the mid-frequency range (roughly 1~kHz down to 0.5~Hz) corresponding to the charge-transfer resistance of the Randles circuit, and, at low frequency, a near-45$^\circ$ line corresponding to Warburg (diffusion) impedance \cite{eis_review_jstage_2022}. Where two semicircles are resolved rather than one, they are commonly attributed to the negative and positive electrodes respectively \cite{eis_review_jstage_2022}, and, in aged cells, an additional emerging semicircle is often observed and attributed to growth of a resistive surface film (e.g. solid-electrolyte-interphase growth), a degradation signature directly relevant to the aging-parameter discussion of Chapter~7 \cite{eis_automated_fitting_2026}.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Randles-type EIS circuit elements and their approximate frequency signature in the Nyquist plot.}
+	\label{tab:eis_elements}
+	\begin{tabular}{p{2.6cm}p{4.6cm}p{4.6cm}}
+		\toprule
+		Circuit element & Physical interpretation & Nyquist-plot signature \\
+		\midrule
+		$R_s$ (series) & Electrolyte, contact, and lead resistance & Real-axis intercept at high frequency \\
+		$R_{ct}$ (charge transfer) & Interfacial charge-transfer resistance & Diameter of the mid-frequency semicircle \\
+		$C_{dl}$ (double layer) & Electrode-electrolyte double-layer capacitance & Governs the frequency at which the semicircle apex occurs \\
+		Warburg element $Z_W$ & Semi-infinite or finite-length solid-state diffusion & Near-45$^\circ$ line at low frequency \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Graphical Parameter Extraction}
+
+Analogous to the pulse-response extraction relations derived for the ECM in Chapter~2, several EIS parameters can be read directly, at least approximately, from geometric features of the Nyquist plot before any formal nonlinear fitting is performed. The diameter of a semicircle along the real axis gives the corresponding charge-transfer resistance directly, and the associated capacitance can be obtained from the frequency $\omega_{\min}$ at which the semicircle's imaginary component reaches its (most negative) extremum, using the relation $\omega_{\min} R_{ct} C_{dl} = 1$, which follows directly from the impedance of a parallel RC combination reaching its maximum imaginary magnitude at $\omega = 1/(R_{ct}C_{dl})$ \cite{eis_jecst_2020}. As with the time-domain dual-polarization model of Chapter~2, however, this graphical approach becomes unreliable when two or more semicircles overlap rather than remaining well separated in frequency, in which case formal nonlinear complex-plane fitting -- typically incorporating a Kramers-Kronig consistency check on the measured data before fitting is attempted -- is required \cite{eis_review_aip_2025}.
+
+\subsection{Identifiability Considerations in EIS-Based Extraction}
+
+The Randles-type circuit used to interpret EIS data is subject to an identifiability concern directly analogous to the one raised for the time-domain dual-polarization ECM in Chapter~2, Section~2.2.3, and it is worth stating explicitly given how central identifiability is to this report's overall treatment of parameter estimation. A sufficiently detailed equivalent circuit constructed as a series combination of many elementary RC (or R-CPE) blocks is not, in general, identifiable as a whole: it is not possible to estimate every individual parameter uniquely by fitting the experimental impedance spectrum, and a reduced circuit, retaining only the subset of elements that can be identified individually from the measured spectrum, must instead be selected \cite{eis_guide_sciencedirect_2024}. This is a frequency-domain instance of the general principle -- first raised for RC-branch time constants in Chapter~2 and to be developed fully as a general framework in Chapter~4 -- that adding structural complexity to a model does not automatically improve the quality of the parameters extracted from a fixed data set; it can, instead, degrade it, by moving the estimation problem into an ill-conditioned regime.
+
+\subsection{EIS as a Complementary, Not Replacement, Characterization}
+
+Given the measurement-time and instrumentation requirements of a full-frequency-range EIS sweep relative to the comparatively rapid HPPC test of Section~\ref{sec:hppc}, EIS is used in this report's framework primarily as a complementary, higher-resolution characterization -- particularly valuable for separating closely spaced time constants that a time-domain pulse fit cannot resolve, and for detecting early-stage degradation signatures such as the emerging semicircle noted in Section~\ref{ssec:eis_nyquist} -- rather than as a wholesale replacement for HPPC-based ECM parameterization. In practice, both data sets are frequently used together: an EIS-derived value of $R_s$ or $R_{ct}$ provides an independent cross-check on the HPPC-derived $R_0$ or fast-branch $R_1$, and disagreement between the two can itself be diagnostic of measurement error or of a modeling assumption (for instance, in the small-signal linearity assumption underlying EIS, noted in Section~\ref{ssec:eis_principle}) that does not hold at the larger-amplitude currents used in the HPPC pulse test.
+
+\section{Sensor Noise and Data Pre-processing}
+\label{sec:noise_preprocessing}
+
+\subsection{Sources of Measurement Error}
+\label{ssec:noise_sources}
+
+Every characterization procedure described in Sections~\ref{sec:ocv_soc}--\ref{sec:eis}, and every in-field measurement subsequently processed by the online estimation methods of Chapters~5 through~7, is subject to measurement error from several distinct sources, which it is useful to distinguish explicitly since they are handled by different pre-processing and estimation strategies:
+
+\begin{itemize}
+	\item \textbf{Sensor accuracy and resolution.} Voltage and current sensors have finite absolute accuracy (often specified as a percentage of full scale plus a fixed offset) and finite resolution (quantization), both of which contribute a baseline measurement uncertainty independent of any dynamic effect. Reported BMS design practice explicitly incorporates voltage sensor accuracy, together with electromagnetic interference/compatibility (EMI/EMC)-related noise from signal-conditioning circuitry, directly into the measurement-noise variance used by the estimation algorithms of Chapter~5 \cite{adaptive_kf_noise_2024}.
+	\item \textbf{Electromagnetic interference (EMI).} Current and voltage sensing circuitry in a BMS operates in close proximity to power electronics (chargers, inverters, contactors) that are significant sources of conducted and radiated electromagnetic interference, which can introduce both broadband noise and narrowband artifacts (e.g. switching-frequency tones) into the measured signal.
+	\item \textbf{Sensor bias and drift.} In addition to random noise, current and voltage sensors can exhibit a slowly varying or constant bias -- particularly relevant for current sensors, where even a small, persistent bias integrates, via Coulomb counting (Chapter~2, Equation~2.3), into a substantial cumulative SOC error over time. Reported EKF-based work has explicitly modeled and jointly estimated sensor voltage and current bias alongside SOC, motivated by exactly this concern \cite{ekf_sensor_bias_academia}.
+	\item \textbf{Sensor faults.} Beyond ordinary noise and drift, outright sensor faults -- stuck values, abrupt offset shifts, or complete signal loss -- occur in field operation and must be distinguished from ordinary measurement noise, since a fault, if undetected, can corrupt an online estimator's output far more severely than stationary noise of the same nominal variance; recent work has specifically addressed voltage-sensor fault diagnosis by combining a maximum-correntropy-optimized Kalman filter with residual-based fault detection precisely to distinguish genuine sensor faults from ordinary noise-induced voltage residuals \cite{mcc_ekf_fault_2025}.
+	\item \textbf{Synchronization and sampling artifacts.} Where current, voltage, and temperature are measured by separate sensor channels (as is standard in a BMS), imperfect time synchronization between channels, and differing or non-uniform sampling intervals, introduce an additional source of error that is instrumentation-architecture-related rather than sensor-accuracy-related.
+\end{itemize}
+
+\subsection{Statistical Characterization of Sensor Noise}
+\label{ssec:noise_statistics}
+
+For use in the Kalman-filter-based estimators developed in Chapter~5, measurement noise is characterized statistically -- typically as zero-mean, with a variance (or covariance, for multiple correlated channels) that populates the measurement-noise covariance matrix $R$ used by those filters. Reported BMS implementation work computes the voltage measurement-noise variance directly from the combination of specified voltage-sensor accuracy and an empirically characterized EMI/EMC noise contribution from the signal-conditioning circuitry, updating this computation periodically during operation rather than treating it as a single fixed, offline-determined constant \cite{adaptive_kf_noise_2024}. This periodic re-characterization reflects the practical observation that a sensor's effective noise level is not necessarily constant across its operating range or across changing electromagnetic conditions in the vehicle or application environment, and it is the experimental-characterization counterpart to the adaptive process-noise tuning methods developed algorithmically in Chapter~5.
+
+\subsection{Filtering and Outlier Rejection}
+\label{ssec:noise_filtering}
+
+Before characterization or estimation data is used for parameter extraction, several pre-processing steps are applied to reduce the impact of the error sources identified in Section~\ref{ssec:noise_sources}:
+
+\begin{enumerate}
+	\item \textbf{Low-pass filtering.} A low-pass filter (commonly a simple moving-average or a more general finite- or infinite-impulse-response digital filter) is applied to raw voltage and current records to attenuate high-frequency sensor and EMI noise that lies well above the characteristic frequency content of the polarization dynamics being characterized (Chapter~2, Sections~2.2--2.3). The cutoff frequency must be chosen conservatively relative to the fastest RC time constant expected in the ECM (Chapter~2, $\tau_1$), since over-aggressive filtering can itself distort the fast-transient information that the HPPC test (Section~\ref{sec:hppc}) is specifically designed to capture.
+	\item \textbf{Outlier detection and rejection.} Isolated, statistically improbable sample values -- consistent with a transient sensor glitch rather than genuine cell behavior -- are identified (commonly via a threshold on deviation from a local moving average or median, or via more sophisticated residual-based methods) and either removed or replaced by interpolation before further processing. Outlier detection of this kind is closely related to, but methodologically distinct from, the sensor \emph{fault} detection problem noted in Section~\ref{ssec:noise_sources}: an isolated outlier is typically treated as a data-cleaning step performed on characterization data, whereas a persistent fault is treated as a detection-and-response problem in an operating BMS.
+	\item \textbf{Resampling and synchronization.} Where current, voltage, and temperature channels are logged at different native sampling rates or with imperfect time alignment, the data is resampled (commonly via linear or higher-order interpolation) onto a common, uniform time base before Coulomb counting (Chapter~2, Equation~2.3) or RC-parameter fitting (Chapter~2, Section~2.2.5) is performed, since both operations assume a consistent, known sample interval $\Delta t$.
+	\item \textbf{Baseline/bias correction.} Where a sensor bias has been independently characterized or jointly estimated (as in the dual-EKF sensor-bias approach noted in Section~\ref{ssec:noise_sources}), the corresponding correction is applied to the raw measurement stream before it is used for offline parameter identification, to avoid propagating a systematic bias into the identified ECM or electrochemical model parameters.
+\end{enumerate}
+
+\subsection{Sensor Fault Detection: A Preview}
+\label{ssec:noise_fault_preview}
+
+Although a full treatment of sensor fault detection algorithms lies closer to the online estimation methods of Chapters~5 through~7 than to the laboratory characterization focus of this chapter, it is useful to note here, as a bridge, that the same residual signal used throughout this report's estimation chapters -- the difference between a measured terminal voltage and the voltage predicted by an ECM or electrochemical model given the current estimated state and parameters -- is also the primary diagnostic signal used for sensor fault detection. Reported work formulates voltage-sensor fault diagnosis using exactly this residual, generated by an adaptive extended Kalman filter, and applies clustering-based or threshold-based detection to the residual sequence to distinguish genuine sensor faults from ordinary estimation error \cite{mcc_ekf_fault_2025,adaptive_lapsvm_2025}. This shared reliance on a model-based residual is part of why the model structures developed in Chapter~2, and the estimation algorithms developed in Chapters~5 through~7, are directly reused, without modification to the underlying model, for the fault-diagnosis task -- only the interpretation applied to the residual signal changes.
+
+\subsection{Implications for the Estimation Chapters}
+
+The pre-processing steps developed in this section have a direct and, in some cases, underappreciated influence on the quality of the parameter estimates produced by the offline and online methods of Chapters~4 through~9: an ECM parameter identified from under-filtered, outlier-contaminated HPPC data will inherit that contamination as apparent (but spurious) parameter variability, while over-aggressive filtering can equally well suppress genuine fast-transient information and bias the identified RC-branch time constants toward artificially larger values. For this reason, the data pre-processing pipeline described in this section is treated, throughout the remainder of this report, as an integral part of the parameter estimation workflow rather than as a separable, purely mechanical step performed once and then forgotten -- a position consistent with the emphasis, in Chapter~1, on distinguishing established literature findings from the practical, implementation-level choices (such as filter cutoff selection) that materially affect estimation outcomes but are rarely reported in full detail in the published literature.
+
+\section{Summary}
+\label{sec:summary_ch3}
+
+This chapter developed the four experimental procedures that generate the data consumed by the parameter estimation methods of Chapters~4 through~9. OCV-SOC characterization (Section~\ref{sec:ocv_soc}) was shown to underpin the equilibrium voltage term $V_{oc}(z,T)$ common to every ECM and electrochemical model structure introduced in Chapter~2, with the low-current and incremental test procedures compared in Table~\ref{tab:ocv_methods}, and the OCV hysteresis phenomenon identified as a source of irreducible ambiguity that the single-valued $V_{oc}(z)$ assumption of Chapter~2 necessarily approximates away. The HPPC test (Section~\ref{sec:hppc}) was developed as the primary route to the transient ECM parameters of Chapter~2, with its pulse-response voltage features mapped directly onto the extraction relations derived there (Table~\ref{tab:hppc_extraction_map}), and its role in power-capability calculation and aging-indicator tracking noted as motivation for the co-estimation and aging discussions of Chapter~7. EIS (Section~\ref{sec:eis}) was introduced as a frequency-domain complement to HPPC, offering higher resolution in separating closely spaced polarization time constants at the cost of longer measurement time and more demanding instrumentation, and its Randles-circuit interpretation was shown to be subject to the same identifiability limitations already encountered, in the time domain, for the dual-polarization ECM of Chapter~2. Finally, sensor noise characterization and data pre-processing (Section~\ref{sec:noise_preprocessing}) addressed the practical reality, easy to take for granted in a purely mathematical treatment of Chapter~2's model structures, that none of the preceding measurements is noise-free, and established the filtering, outlier-rejection, resampling, and bias-correction steps that convert raw sensor output into the clean data implicitly assumed by every subsequent chapter.
+
+Taken together, this chapter closes the loop opened in Chapter~2: every parameter table constructed there (Chapter~2, Tables~2.1--2.9) now has an associated, concretely described experimental route by which its entries are populated. Chapter~4 takes up the next step in that pipeline, developing the offline curve-fitting and heuristic optimization methods by which the characterization data generated in this chapter is formally converted into parameter estimates, and introducing, in general terms, the identifiability and experimental-design concepts that Sections~\ref{ssec:ocv_fitting}, \ref{ssec:hppc_extraction}, and \ref{ssec:eis_nyquist} have each previewed for a specific procedure.

@@ -1,1 +1,808 @@
-﻿\chapter{Battery Modeling Fundamentals}
+\chapter{Battery Modeling Fundamentals}
+\label{chap:modeling}
+
+\section{Introduction to Modeling Approaches}
+\label{sec:intro_modeling}
+
+Parameter estimation, in any of the forms discussed later in this report, cannot be separated from the mathematical model to which the estimated parameters belong. A parameter has meaning only in relation to the structure that defines it: the ohmic resistance $R_0$ of an equivalent circuit model is a different mathematical object from the solid-phase diffusion coefficient $D_s$ of a porous-electrode model, even though both describe aspects of the same physical cell. Before the report can discuss curve fitting, recursive least squares, Kalman filtering, or machine-learning-based estimators, it is therefore necessary to establish the model families onto which these estimators are applied. This chapter serves that purpose.
+
+Lithium-ion battery models used in engineering practice fall broadly into three categories, distinguished primarily by the physical detail they retain and the computational burden they impose:
+
+\begin{enumerate}
+	\item \textbf{Equivalent circuit models (ECMs)}, which represent the battery's electrical terminal behavior using discrete resistive and capacitive elements together with a controlled voltage source. ECMs are empirical in the sense that their parameters are fitted to measured voltage-current data rather than derived from first-principles electrochemistry, although the topology of the circuit is often motivated by the physical processes it emulates.
+	\item \textbf{Electrochemical physics-based models}, which describe lithium transport, charge transfer kinetics, and potential distributions within the electrodes and electrolyte using coupled partial differential equations (PDEs) derived from porous-electrode theory and concentrated-solution theory. These models offer high physical fidelity at the cost of significantly greater mathematical and computational complexity.
+	\item \textbf{Thermal-coupled extensions} of either of the above, which augment the electrical or electrochemical description with an energy balance so that temperature-dependent behavior, self-heating, and thermal safety margins can be captured.
+\end{enumerate}
+
+A fourth category, data-driven and machine-learning models, is treated separately in Chapter~\ref{chap:ai_estimation} of this report, since such models do not decompose into physically interpretable parameters in the same sense as ECMs or electrochemical models; nevertheless, their outputs are frequently compared against, or hybridized with, the physics-based structures introduced in this chapter.
+
+The choice of model family is governed by a trade-off among three competing objectives: \emph{accuracy}, \emph{computational tractability}, and \emph{parameter interpretability/identifiability}. A recent comprehensive review of ECM structures for lithium-ion batteries frames this trade-off explicitly, noting that electrochemical models offer strong mechanistic interpretability at relatively high computational complexity, whereas data-driven models perform well in nonlinear fitting but depend heavily on training data and offer limited interpretability, with equivalent circuit models occupying an intermediate position that has made them the dominant choice for embedded battery management system (BMS) implementation \cite{mdpi_ecm_review_2026}. This chapter develops each family in enough mathematical detail to support the parameter estimation methods presented in Chapters~4 through~9, while deferring experimental characterization procedures (HPPC, EIS, OCV testing) to Chapter~3.
+
+It is useful, before proceeding, to distinguish the two related but non-identical estimation problems that recur throughout this report and that were introduced in Chapter~1:
+
+\begin{itemize}
+	\item \textbf{Parameter estimation} seeks to determine the numerical values of \emph{structural constants} of a chosen model -- for example $R_0$, $R_1$, $C_1$ in a first-order ECM, or the solid-phase diffusivity $D_s$ and reaction rate constant $k$ in an electrochemical model. These quantities are treated as slowly varying or constant over a given operating window, and they characterize the model itself rather than its instantaneous condition.
+	\item \textbf{State estimation} seeks to determine the instantaneous value of \emph{internal variables} that evolve dynamically during operation, most commonly the state of charge (SOC), state of health (SOH), and state of power (SOP). States are outputs of the model's dynamics for a given parameter set and input excitation.
+\end{itemize}
+
+The two problems are coupled: state estimators such as the extended Kalman filter (EKF) require an accurate parameter set to produce unbiased state estimates, while several parameter identification methods (Chapter~7, co-estimation) use joint or dual estimation architectures precisely because parameters and states cannot always be estimated independently. This chapter's role is to fix the model structures over which both types of estimation are subsequently performed.
+
+\subsection{Assumptions Common to All Model Families}
+
+Before developing individual model structures, it is useful to state explicitly the modeling assumptions that are, implicitly or explicitly, shared across all of the model families treated in this chapter, since departures from these assumptions are frequently the root cause of the parameter drift and identifiability difficulties discussed in later chapters:
+
+\begin{itemize}
+	\item \textbf{Single-cell scope.} Unless otherwise stated, all models in this chapter describe a single electrochemical cell. Pack-level effects -- cell-to-cell variation, thermal and electrical interaction between neighboring cells, and busbar/interconnect impedance -- are outside the present scope and are treated, where relevant, as an additional source of measurement and model uncertainty in the estimation chapters.
+	\item \textbf{Well-defined current and voltage reference directions.} Current $I(t)$ is defined positive during discharge and negative during charge throughout this report, and terminal voltage $V_t(t)$ is measured directly across the cell terminals, consistent with the sign convention used in Equation~\eqref{eq:generic_ecm} and retained without redefinition in every subsequent chapter, per the cross-chapter consistency requirement established in Chapter~1.
+	\item \textbf{Lumped or macrohomogeneous treatment of the electrode microstructure.} Even the electrochemical models of Section~\ref{sec:electrochemical}, which are far more spatially detailed than the ECMs of Section~\ref{sec:ecm}, do not resolve individual particles, pores, or binder/conductive-additive structures; they instead use volume-averaged (macrohomogeneous) continuum descriptions. Fully resolved microstructural models exist in the broader literature but are not treated in this report.
+	\item \textbf{Negligible parasitic side reactions under nominal operation.} Side reactions responsible for long-term capacity fade and impedance rise (solid-electrolyte-interphase growth, lithium plating, active-material loss) are not included explicitly in the governing equations of this chapter. Their consequence -- slow, monotonic drift in the parameters identified from these models -- is addressed separately as an aging/degradation parameter-estimation problem, flagged for further treatment in Chapter~7.
+\end{itemize}
+
+\subsection{A First Comparison of Model Families}
+
+Table~\ref{tab:model_family_overview} previews, at a qualitative level, the comparison that this chapter develops in full over the following three sections. It is included here to orient the reader before the individual model derivations, and is revisited in quantitative form in Section~\ref{sec:summary_ch2}.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Qualitative overview of the model families developed in this chapter.}
+	\label{tab:model_family_overview}
+	\begin{tabular}{p{2.6cm}p{3.1cm}p{3.1cm}p{3.1cm}}
+		\toprule
+		Attribute & Equivalent circuit models & Electrochemical (P2D/SPM) models & Thermal-coupled extension \\
+		\midrule
+		Governing equations & Algebraic + low-order ODEs & Coupled nonlinear PDEs (+ ODEs for SPM) & Energy balance (ODE or PDE), coupled to either of the above \\
+		Parameter interpretability & Circuit-level (indirect physical meaning) & Direct physical/material meaning & Thermophysical and entropic properties \\
+		Typical parameter count & 3--7 & $\sim$5 (SPM) to $\sim$90 (P2D) & 3--6 additional parameters \\
+		Computational cost & Very low & Low (SPM) to very high (P2D) & Low to moderate, added to base model \\
+		Primary use in this report & Real-time BMS state/parameter estimation & Reference model; aging and design studies & Enables temperature-dependent parameter tracking \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection*{Chapter Roadmap}
+
+Section~\ref{sec:ecm} develops equivalent circuit models in increasing order of complexity, beginning with the internal-resistance (Rint) model, proceeding through the first-order Thevenin model, and concluding with the second-order dual-polarization model. Section~\ref{sec:electrochemical} introduces the pseudo-two-dimensional (P2D) model and its reduced-order counterpart, the single particle model (SPM). Section~\ref{sec:thermal} discusses thermal coupling, presenting the governing energy balance and its application to both ECM-based and electrochemical descriptions. Section~\ref{sec:summary_ch2} closes the chapter with a structural comparison of all model families and a bridge to the experimental characterization procedures of Chapter~3.
+
+\subsection{Notation Used Throughout This Chapter}
+\label{ssec:notation}
+
+Table~\ref{tab:notation} collects the principal symbols introduced across Sections~\ref{sec:ecm}--\ref{sec:thermal}, so that a reader consulting a later chapter can locate a symbol's definition quickly. Consistent with the cross-chapter consistency requirement stated in Chapter~1, these symbols retain the same meaning wherever they reappear in Chapters~3 through~12; where a later chapter requires an additional symbol not defined here, it is introduced explicitly at first use in that chapter.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Principal notation introduced in Chapter~2.}
+	\label{tab:notation}
+	\begin{tabular}{p{1.8cm}p{6.8cm}p{3.1cm}}
+		\toprule
+		Symbol & Meaning & First used \\
+		\midrule
+		$V_t$ & Terminal voltage & Eq.~\eqref{eq:generic_ecm} \\
+		$V_{oc}(z,T)$ & Open-circuit voltage & Eq.~\eqref{eq:generic_ecm} \\
+		$z$ & State of charge (SOC), $z \in [0,1]$ & Eq.~\eqref{eq:generic_ecm} \\
+		$I$ & Terminal current (positive during discharge) & Eq.~\eqref{eq:generic_ecm} \\
+		$R_0$ & Ohmic resistance & Eq.~\eqref{eq:rint} \\
+		$R_i, C_i$ & $i$-th RC branch resistance and capacitance & Eq.~\eqref{eq:thevenin_rc} \\
+		$\tau_i = R_i C_i$ & Time constant of the $i$-th RC branch & Sec.~\ref{ssec:thevenin} \\
+		$Q_n$ & Nominal cell capacity & Eq.~\eqref{eq:coulomb_counting} \\
+		$\eta_c$ & Coulombic efficiency & Eq.~\eqref{eq:coulomb_counting} \\
+		$c_s, c_e$ & Solid-phase and electrolyte-phase lithium concentration & Eq.~\eqref{eq:p2d_solid_diffusion} \\
+		$D_s, D_e^{\text{eff}}$ & Solid-phase and effective electrolyte diffusivity & Eq.~\eqref{eq:p2d_solid_diffusion} \\
+		$\phi_s, \phi_e$ & Solid-phase and electrolyte-phase potential & Eq.~\eqref{eq:p2d_charge_conservation} \\
+		$j$ & Interfacial (faradaic) reaction current density & Eq.~\eqref{eq:p2d_flux_bc} \\
+		$\eta$ & Surface overpotential & Eq.~\eqref{eq:p2d_bv} \\
+		$T, T_\infty$ & Cell and ambient temperature & Eq.~\eqref{eq:thermal_pde} \\
+		$\dot q$ & Volumetric heat generation rate & Eq.~\eqref{eq:bernardi_lumped} \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Model Selection Considerations for BMS Applications}
+\label{ssec:model_selection_preview}
+
+Although the detailed trade-offs among model families are developed section by section in what follows, it is useful to state at the outset the practical considerations that, in the literature and in industrial practice, drive the choice between them. Three considerations dominate:
+
+\begin{itemize}
+	\item \textbf{Available computational budget.} Automotive and consumer BMS microcontrollers typically execute at update rates of 1--10~Hz with limited floating-point throughput and memory. This computational envelope, discussed quantitatively in Chapter~7 (Section~7.4), effectively rules out direct online execution of the full P2D model and strongly favors ECMs, with reduced-order electrochemical models (SPM) occupying an intermediate position feasible for some, but not all, embedded platforms.
+	\item \textbf{Required physical interpretability.} Applications that must explain \emph{why} a parameter has changed -- for instance, distinguishing loss of active material from loss of lithium inventory in an aging study -- benefit from the direct physical meaning of electrochemical model parameters, whereas applications that only need an accurate voltage/SOC prediction can treat ECM parameters as a purely empirical fit.
+	\item \textbf{Availability and richness of identification data.} As the number of free parameters grows (Table~\ref{tab:model_family_overview}), so does the richness of excitation required to identify them uniquely; a two-parameter Rint model can be identified from a handful of pulse tests, while a full P2D parameter set generally requires a combination of specialized half-cell, symmetric-cell, and full-cell characterization data that goes well beyond what a production BMS can collect in the field.
+\end{itemize}
+
+These considerations are revisited quantitatively as each model family is introduced, and are synthesized in the comparative discussion of Section~\ref{sec:summary_ch2}.
+
+\section{Equivalent Circuit Models (ECM)}
+\label{sec:ecm}
+
+Equivalent circuit models describe the electrical terminal behavior of a lithium-ion cell using an assembly of ideal circuit elements: a controlled voltage source representing the open-circuit voltage (OCV), one or more resistors representing ohmic and diffusion-related voltage drops, and one or more parallel resistor-capacitor (RC) branches representing the transient polarization response associated with charge-transfer and diffusion processes at the electrode-electrolyte interface. Because ECMs operate directly on terminal current and voltage without resolving internal concentration or potential fields, they are computationally inexpensive and well suited to real-time execution on the fixed-point or low-power microcontrollers typically used in automotive and consumer BMS hardware \cite{mdpi_ecm_review_2026}.
+
+All ECM topologies discussed in this section share the same general terminal-voltage relationship
+
+\begin{equation}
+	V_t(t) = V_{oc}\big(z(t), T\big) - \sum_{i} \eta_i(t) - I(t) R_0,
+	\label{eq:generic_ecm}
+\end{equation}
+
+\noindent where $V_t$ is the measured terminal voltage, $V_{oc}(z,T)$ is the open-circuit voltage expressed as a (generally nonlinear) function of the state of charge $z$ and temperature $T$, $I$ is the terminal current (defined here as positive during discharge), $R_0$ is the instantaneous ohmic resistance, and $\eta_i$ denotes the polarization overpotential contributed by the $i$-th RC branch. The number and configuration of RC branches distinguishes the three canonical ECM structures treated below: the Rint model uses none, the Thevenin model uses one, and the dual-polarization (second-order) model uses two.
+
+\subsection{Modeling Assumptions Underlying the ECM Framework}
+\label{ssec:ecm_assumptions}
+
+All three ECM topologies developed in this section share a common set of simplifying assumptions, which should be kept in mind when interpreting the identified parameter values in later chapters:
+
+\begin{enumerate}
+	\item The open-circuit voltage $V_{oc}(z,T)$ is assumed to be a static, single-valued function of SOC and temperature. In reality, lithium-ion cells exhibit a measurable OCV hysteresis between charge and discharge directions, particularly for certain electrode chemistries (e.g. graphite/LFP); this hysteresis is neglected in the base ECM formulations presented here and is noted, rather than modeled, at this point in the report.
+	\item Circuit elements ($R_0$, $R_i$, $C_i$) are treated as constant \emph{within} a given identification window (e.g. a single pulse test at fixed SOC and temperature), even though they are known, physically, to depend on SOC, temperature, current direction, and SOH. The dependence on these variables is captured, in practice, by re-identifying the parameters at a grid of operating points and interpolating between them -- a procedure described further in Chapter~4.
+	\item The RC branches are assumed linear (constant $R_i$, $C_i$ for a given operating point), even though the underlying charge-transfer and diffusion processes they approximate are, in general, nonlinear functions of overpotential. This linearization is accurate for the small-to-moderate overpotentials typical of BMS operating conditions but degrades for large, abrupt current transients.
+	\item Self-heating during the identification test is assumed negligible, so that the identified parameters correspond to a well-defined, approximately isothermal condition. Section~\ref{sec:thermal} revisits this assumption explicitly.
+\end{enumerate}
+
+\subsection{Internal Resistance (Rint) Model}
+\label{ssec:rint}
+
+\subsubsection{Model Structure}
+
+The internal resistance model, commonly abbreviated Rint, is the simplest ECM topology in use. It represents the cell as an ideal OCV source $V_{oc}(z)$ in series with a single lumped resistance $R_0$, with no dynamic (capacitive) element \cite{intechopen_ecm_2021}. The terminal voltage is given by the purely algebraic relation
+
+\begin{equation}
+	V_t(t) = V_{oc}\big(z(t)\big) - I(t)\,R_0.
+	\label{eq:rint}
+\end{equation}
+
+Because Equation~\eqref{eq:rint} contains no differential term, the Rint model has no memory: the terminal voltage responds instantaneously to a change in current, with no transient polarization decay. This is a direct consequence of neglecting the capacitive double-layer and diffusion-related charge storage that is physically present at the electrode-electrolyte interface.
+
+\subsubsection{State-of-Charge Dynamics}
+
+The state of charge itself is governed, in essentially every ECM topology considered in this report, by Coulomb counting,
+
+\begin{equation}
+	\frac{dz(t)}{dt} = -\frac{\eta_c\, I(t)}{Q_n},
+	\label{eq:coulomb_counting}
+\end{equation}
+
+\noindent where $Q_n$ is the nominal cell capacity (in ampere-seconds or ampere-hours, with consistent units for $I$), and $\eta_c$ is the Coulombic efficiency, often taken as unity for discharge and slightly less than unity for charge to account for parasitic reactions. Equation~\eqref{eq:coulomb_counting} is common to all ECM variants in this section and will not be repeated for the Thevenin and dual-polarization models; only the algebraic output equation, Equation~\eqref{eq:generic_ecm}, changes with topology.
+
+\subsubsection{Parameters and Their Physical Interpretation}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Parameters of the Rint equivalent circuit model.}
+	\label{tab:rint_params}
+	\begin{tabular}{p{2.2cm}p{6.3cm}p{3.3cm}}
+		\toprule
+		Symbol & Physical interpretation & Typical identification method \\
+		\midrule
+		$V_{oc}(z)$ & Open-circuit voltage as a function of SOC; lumps electrode equilibrium potentials & OCV-SOC test (Ch.~3) \\
+		$R_0$ & Lumped ohmic resistance: electrolyte resistance, electrode/current-collector contact resistance, and instantaneous charge-transfer resistance & Pulse test / HPPC (Ch.~3), curve fitting (Ch.~4) \\
+		$Q_n$ & Nominal capacity & Capacity (coulomb-counting) test \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsubsection{Advantages, Limitations, and Applicability}
+
+The principal advantage of the Rint model is its minimal parameter count -- typically only $R_0$ and a tabulated or polynomial $V_{oc}(z)$ curve are required -- which makes identification straightforward even with sparse experimental data, and execution trivially cheap on embedded hardware. Its principal limitation is the omission of transient polarization dynamics, which causes it to systematically underpredict the voltage relaxation observed after a current step and to lose accuracy under the dynamic current profiles typical of automotive drive cycles \cite{intechopen_ecm_2021}. Consequently, the Rint model is generally reserved for coarse power-budget estimates, low-fidelity system-level simulations, or as an initialization stage before fitting higher-order models, rather than for production BMS voltage prediction under dynamic loading. The recent literature consistently reports the Rint topology as achieving the lowest structural complexity among ECM variants, at the direct cost of transient-response accuracy \cite{mdpi_ecm_review_2026}.
+
+\subsection{Thevenin (First-Order RC) Model}
+\label{ssec:thevenin}
+
+\subsubsection{Motivation}
+
+The Thevenin model, also referred to as the first-order RC model, extends the Rint structure by adding a single parallel RC branch in series with $R_0$. This branch captures the exponential voltage relaxation that is observed experimentally when a current pulse is applied to, or removed from, a lithium-ion cell -- a phenomenon attributable to double-layer capacitive charging and to the finite rate of charge-transfer and short-range diffusion processes at the electrode surface \cite{sciencedirect_thevenin_2025}. Because it balances a modest increase in complexity against a substantial gain in transient accuracy, the Thevenin ECM is widely reported as the most common choice for real-time SOC/parameter estimation in production BMS applications \cite{sciencedirect_comprehensive_ecm_2021}.
+
+\subsubsection{Circuit Description and Governing Equations}
+
+The Thevenin model, illustrated conceptually in Figure~\ref{fig:thevenin_circuit}, consists of the OCV source $V_{oc}(z)$, the ohmic resistance $R_0$, and a single RC pair $(R_1, C_1)$ representing the polarization voltage $U_p$. 
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=0.6\textwidth]{thevenin_circuit.png}
+    % FIGURE PLACEHOLDER: 
+    % Create manually using TikZ or circuitikz. 
+    % Suggested content: Schematic of the Thevenin First-Order RC model. Voltage source U_oc in series with R_0, which is in series with a parallel R1-C1 block.
+    \caption{Conceptual schematic of the Thevenin (first-order RC) equivalent circuit model.}
+    \label{fig:thevenin_circuit}
+\end{figure}
+
+Applying Kirchhoff's voltage law to the circuit yields the terminal voltage equation
+
+\begin{equation}
+	V_t(t) = V_{oc}\big(z(t)\big) - U_p(t) - I(t)\,R_0,
+	\label{eq:thevenin_terminal}
+\end{equation}
+
+\noindent where the polarization voltage $U_p$ obeys the first-order linear differential equation
+
+\begin{equation}
+	\frac{dU_p(t)}{dt} = -\frac{U_p(t)}{R_1 C_1} + \frac{I(t)}{C_1}.
+	\label{eq:thevenin_rc}
+\end{equation}
+
+Equations~\eqref{eq:thevenin_terminal}--\eqref{eq:thevenin_rc}, together with the Coulomb-counting relation of Equation~\eqref{eq:coulomb_counting}, are consistent with the state-space formulation reported in the recent literature on Thevenin-model-based SOC/parameter estimation \cite{arxiv_hinf_ekf_2023}. The product $\tau_1 = R_1 C_1$ defines the characteristic time constant of the polarization branch: physically, $\tau_1$ governs how quickly the diffusion/charge-transfer overpotential decays once the current is removed.
+
+\subsubsection{Discrete-Time State-Space Form}
+
+For digital implementation and for the recursive estimators discussed in Chapters~5 and~7, Equations~\eqref{eq:coulomb_counting} and \eqref{eq:thevenin_rc} are discretized with sample interval $\Delta t$ using a zero-order-hold or forward-Euler approximation, giving the state-space form
+
+\begin{equation}
+	\begin{aligned}
+		\begin{bmatrix} z_{k+1} \\ U_{p,k+1} \end{bmatrix}
+		&=
+		\begin{bmatrix} 1 & 0 \\[2pt] 0 & e^{-\Delta t / \tau_1} \end{bmatrix}
+		\begin{bmatrix} z_k \\ U_{p,k} \end{bmatrix}
+		+
+		\begin{bmatrix} -\eta_c \Delta t / Q_n \\[2pt] R_1\big(1 - e^{-\Delta t/\tau_1}\big) \end{bmatrix} I_k, \\[4pt]
+		V_{t,k} &= V_{oc}(z_k) - U_{p,k} - I_k R_0,
+	\end{aligned}
+	\label{eq:thevenin_ssm}
+\end{equation}
+
+\noindent which is the form used directly by the recursive least squares and Kalman-filter-based identification algorithms of Chapters~5 and~7. This discretization pattern, with the exponential state-transition term $e^{-\Delta t/\tau_1}$ applied to the polarization state, matches the structure reported for Thevenin-model-based EKF and $H_\infty$ filtering implementations in the recent battery estimation literature \cite{arxiv_hinf_ekf_2023}.
+
+\subsubsection{Parameters}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Parameters of the first-order Thevenin (1RC) equivalent circuit model.}
+	\label{tab:thevenin_params}
+	\begin{tabular}{p{2.0cm}p{6.6cm}p{3.0cm}}
+		\toprule
+		Symbol & Physical interpretation & Typical range of variation \\
+		\midrule
+		$R_0$ & Ohmic resistance (electrolyte, contact, instantaneous charge transfer) & Increases with SOH degradation and with decreasing temperature \\
+		$R_1$ & Polarization (charge-transfer/diffusion) resistance & Strongly SOC- and temperature-dependent \\
+		$C_1$ & Polarization capacitance (double-layer and short-range diffusion storage) & Varies with SOC, temperature, and current direction \\
+		$\tau_1 = R_1 C_1$ & Polarization time constant & Typically on the order of tens of seconds \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsubsection{Graphical/Analytical Parameter Extraction from a Current Pulse}
+
+Although Chapter~4 develops formal curve-fitting and optimization-based identification procedures, it is instructive at this stage to note how the Thevenin model's three parameters relate directly to features of the voltage response to a single current pulse, since this relationship motivates both the offline regression methods of Chapter~4 and the pulse-based HPPC test protocol of Chapter~3. Consider a current pulse of magnitude $I_0$ applied at $t = 0$ to a cell initially at rest (steady state, $U_p(0^-) = 0$). Two voltage discontinuities and one exponential transient are observable in the response:
+
+\begin{enumerate}
+	\item An instantaneous voltage step of magnitude $I_0 R_0$ occurs at the moment the pulse is applied (and an equal, opposite step occurs at pulse removal), since $R_0$ contributes no dynamics.
+	\item Following the initial step, the voltage relaxes exponentially toward its new steady-state value with time constant $\tau_1 = R_1 C_1$, reaching the steady-state polarization voltage $U_{p,\infty} = I_0 R_1$ as $t \to \infty$ (for a pulse of duration much longer than $\tau_1$).
+	\item Upon pulse removal, the polarization voltage relaxes back toward zero with the same time constant $\tau_1$, which can be extracted independently from the relaxation segment of the response, providing a useful cross-check.
+\end{enumerate}
+
+This behavior follows directly from solving Equation~\eqref{eq:thevenin_rc} for a step input $I(t) = I_0\, \mathbf{1}(t \ge 0)$, which gives the closed-form response
+
+\begin{equation}
+	U_p(t) = I_0 R_1 \left(1 - e^{-t/\tau_1}\right), \qquad t \ge 0.
+	\label{eq:thevenin_step_response}
+\end{equation}
+
+\paragraph{Illustrative example (invented numerical values, for demonstration only).} Suppose a pulse test at a fixed SOC and temperature produces an instantaneous voltage drop of $50\ \text{mV}$ at pulse onset for an applied current of $I_0 = 5\ \text{A}$, a further, exponentially decaying drop that asymptotes to an additional $30\ \text{mV}$, and a measured 63.2\%-of-final-value relaxation time of $18\ \text{s}$. Under the relations above, this would correspond to $R_0 = 50\,\text{mV}/5\,\text{A} = 10\ \text{m}\Omega$, $R_1 = 30\,\text{mV}/5\,\text{A} = 6\ \text{m}\Omega$, $\tau_1 = 18\ \text{s}$, and hence $C_1 = \tau_1/R_1 = 18/0.006 = 3000\ \text{F}$. These numbers are illustrative only, are not drawn from any cited source, and are intended solely to demonstrate the relationship between the pulse response and the Thevenin parameters; they should not be used as representative values for any specific cell chemistry or format.
+
+\subsubsection{Advantages and Limitations}
+
+Relative to the Rint model, the Thevenin structure substantially improves prediction of the voltage response to step and pulse excitation and captures the qualitative relaxation behavior observed experimentally \cite{aip_thevenin_2018}. Its principal limitation is that a single RC branch typically cannot simultaneously represent both the fast (double-layer charging, sub-second) and slow (solid-state diffusion, tens-of-seconds-to-minutes) polarization processes that coexist physically in a lithium-ion cell; experimental comparisons using single- versus triple-RC-branch circuits under constant-current discharge have shown that increasing the number of RC branches reduces the error between simulated and measured voltage, at the cost of a larger parameter set to identify \cite{aip_thevenin_2018}. This motivates the second-order (dual-polarization) extension developed next, in which two RC branches with well-separated time constants are used to disentangle fast and slow polarization dynamics.
+
+\subsection{Dual-Polarization (Second-Order RC) Model}
+\label{ssec:2rc}
+
+\subsubsection{Motivation}
+
+The dual-polarization (DP) model, also referred to as the second-order RC model, adds a second RC branch $(R_2, C_2)$ in series with the first, so that two decoupled time constants are available to represent, respectively, the fast interfacial charge-transfer/double-layer process and the slower solid-state diffusion process \cite{sciencedirect_thevenin_2025}. This addition is the natural response to the single-time-constant limitation of the Thevenin model identified above, and it is the highest-order ECM topology treated in detail in this report, consistent with the outline established in Chapter~1.
+
+\subsubsection{Governing Equations}
+
+The terminal voltage of the dual-polarization model is
+
+\begin{equation}
+	V_t(t) = V_{oc}\big(z(t)\big) - U_{p1}(t) - U_{p2}(t) - I(t) R_0,
+	\label{eq:dp_terminal}
+\end{equation}
+
+\noindent where the two polarization voltages obey
+
+\begin{equation}
+	\begin{aligned}
+		\frac{dU_{p1}(t)}{dt} &= -\frac{U_{p1}(t)}{R_1 C_1} + \frac{I(t)}{C_1}, \\[4pt]
+		\frac{dU_{p2}(t)}{dt} &= -\frac{U_{p2}(t)}{R_2 C_2} + \frac{I(t)}{C_2}.
+	\end{aligned}
+	\label{eq:dp_rc}
+\end{equation}
+
+By convention, and to preserve identifiability (Section~\ref{sssec:2rc_identifiability}), the branches are ordered so that $\tau_1 = R_1 C_1 \ll \tau_2 = R_2 C_2$, with $\tau_1$ associated with fast charge-transfer/double-layer relaxation and $\tau_2$ with slower diffusion-limited relaxation.
+
+\subsubsection{Discrete-Time State-Space Form}
+
+Extending Equation~\eqref{eq:thevenin_ssm} to the three-state vector $x_k = [z_k,\, U_{p1,k},\, U_{p2,k}]^{\mathsf{T}}$ gives
+
+\begin{equation}
+	\begin{aligned}
+		x_{k+1} &= A_d\, x_k + B_d\, I_k, \\
+		A_d &= \operatorname{diag}\!\left(1,\; e^{-\Delta t/\tau_1},\; e^{-\Delta t/\tau_2}\right), \\
+		B_d &= \left[-\frac{\eta_c \Delta t}{Q_n},\;\; R_1\big(1 - e^{-\Delta t/\tau_1}\big),\;\; R_2\big(1 - e^{-\Delta t/\tau_2}\big)\right]^{\mathsf{T}}, \\
+		V_{t,k} &= V_{oc}(z_k) - U_{p1,k} - U_{p2,k} - I_k R_0,
+	\end{aligned}
+	\label{eq:dp_ssm}
+\end{equation}
+
+\noindent which is the discrete linear (in the RC states, though $V_{oc}(\cdot)$ remains nonlinear in $z$) state-space model onto which the recursive least squares, extended/unscented Kalman filter, and observer-based estimators of Chapters~5 and~6 are applied when second-order fidelity is required.
+
+\subsubsection{Derivation of the Exact Discretization}
+
+The discrete state-transition and input matrices used in Equation~\eqref{eq:dp_ssm} follow from solving each first-order RC differential equation, Equation~\eqref{eq:dp_rc}, exactly over one sample interval under a zero-order-hold assumption on the current $I(t)$ (i.e. $I(t) = I_k$ constant for $t \in [t_k, t_k + \Delta t)$). For a generic RC branch with time constant $\tau = RC$, the linear ODE
+
+\begin{equation*}
+	\dot{U}_p(t) = -\frac{1}{\tau} U_p(t) + \frac{1}{C} I_k
+\end{equation*}
+
+\noindent has the exact solution, starting from $U_p(t_k)$,
+
+\begin{equation}
+	U_p(t_k + \Delta t) = U_p(t_k)\, e^{-\Delta t/\tau} + R\left(1 - e^{-\Delta t/\tau}\right) I_k,
+	\label{eq:zoh_derivation}
+\end{equation}
+
+\noindent obtained by applying the integrating-factor method to the ODE above and evaluating the resulting integral under the piecewise-constant current assumption. Equation~\eqref{eq:zoh_derivation}, applied independently to each RC branch, is precisely the structure that appears in the state-transition matrix $A_d$ and input matrix $B_d$ of Equation~\eqref{eq:dp_ssm}. This exact zero-order-hold discretization is preferred over a simple forward-Euler approximation ($U_{p,k+1} \approx U_{p,k}(1 - \Delta t/\tau) + \Delta t\, I_k/C$) because it remains numerically stable and accurate even when the sample interval $\Delta t$ is a non-negligible fraction of $\tau$, which is frequently the case for the fast polarization branch $\tau_1$ in Chapter~3's HPPC sampling protocols.
+
+\subsubsection{Offline Extraction Procedure from a Two-Branch Pulse Response}
+
+Where the Thevenin model's parameters could be read directly from a single-exponential pulse response (Section~\ref{ssec:thevenin}), the dual-polarization model requires that a bi-exponential (two-time-constant) response be decomposed into its constituent modes. A standard offline extraction procedure, elaborated with the curve-fitting and regression tools of Chapter~4, proceeds as follows:
+
+\begin{enumerate}
+	\item Compute the instantaneous voltage step at the pulse onset (and, symmetrically, at pulse removal) to obtain $R_0$, exactly as for the Thevenin model.
+	\item Isolate the relaxation segment of the voltage response following pulse removal and fit it to a two-exponential model of the form $\Delta V(t) = A_1 e^{-t/\tau_1} + A_2 e^{-t/\tau_2}$, using nonlinear least squares (Chapter~4) initialized from a rough graphical estimate (e.g. fitting the late-time, slowly varying tail first to obtain an initial estimate of $\tau_2$, then subtracting this component and fitting the residual fast transient to obtain $\tau_1$).
+	\item Recover $R_1, C_1, R_2, C_2$ from the fitted amplitudes $A_1, A_2$ and time constants $\tau_1, \tau_2$ using $R_i = A_i / I_0$ and $C_i = \tau_i / R_i$.
+	\item Validate the fitted parameter set against an independent pulse (different SOC or magnitude) not used in the fitting step, consistent with the general validation principle emphasized throughout this report (Chapter~1, Section~1.3; Chapter~4).
+\end{enumerate}
+
+\subsubsection{Parameter Identifiability Considerations}
+\label{sssec:2rc_identifiability}
+
+Increasing model order from one to two RC branches does not come without cost from an estimation standpoint. If the two time constants $\tau_1$ and $\tau_2$ are not well separated (typically requiring at least an order-of-magnitude difference), the corresponding exponential response modes in Equation~\eqref{eq:dp_ssm} become difficult to distinguish from voltage-relaxation data corrupted by measurement noise, and the identification problem becomes ill-conditioned: many combinations of $(R_1, C_1, R_2, C_2)$ can reproduce the measured terminal voltage within the noise floor. This is a specific instance of the general parameter-identifiability issue discussed in Chapter~4 (Section on parameter identifiability) and Chapter~9, and it is one of the principal practical reasons that some BMS designs retain the first-order Thevenin model in preference to the second-order structure despite the latter's theoretically superior transient fidelity.
+
+\subsubsection{Parameters}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Parameters of the second-order (dual-polarization) equivalent circuit model.}
+	\label{tab:dp_params}
+	\begin{tabular}{p{2.0cm}p{6.6cm}p{3.0cm}}
+		\toprule
+		Symbol & Physical interpretation & Associated timescale \\
+		\midrule
+		$R_0$ & Ohmic resistance & Instantaneous \\
+		$R_1, C_1$ & Fast polarization branch: interfacial charge transfer, double-layer capacitance & $\tau_1 \sim$ seconds \\
+		$R_2, C_2$ & Slow polarization branch: solid-state / short-range diffusion & $\tau_2 \sim$ tens of seconds to minutes \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Comparative Summary of ECM Topologies}
+
+Table~\ref{tab:ecm_comparison} synthesizes the three ECM structures developed in this section against the criteria that will recur throughout the estimation-method chapters: parameter count, ability to capture transient dynamics, computational cost, and identifiability risk.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Comparative summary of equivalent circuit model topologies.}
+	\label{tab:ecm_comparison}
+	\begin{tabular}{p{2.2cm}p{1.6cm}p{3.6cm}p{2.2cm}p{3.0cm}}
+		\toprule
+		Model & Order & Parameters & Transient fidelity & Identifiability risk \\
+		\midrule
+		Rint & 0 & $R_0$, $V_{oc}(z)$ & None (algebraic) & Low (few parameters) \\
+		Thevenin & 1 & $R_0, R_1, C_1$, $V_{oc}(z)$ & Single exponential relaxation & Low-to-moderate \\
+		Dual-polarization & 2 & $R_0, R_1, C_1, R_2, C_2$, $V_{oc}(z)$ & Two decoupled relaxation modes & Moderate-to-high if $\tau_1 \not\ll \tau_2$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Algorithmic Summary of Offline ECM Extraction}
+\label{ssec:ecm_pseudocode}
+
+The procedures described in Sections~\ref{ssec:thevenin} and~\ref{ssec:2rc} can be summarized in the following pseudocode, which is elaborated with full regression detail in Chapter~4 and is presented here purely to consolidate the extraction logic developed across this section.
+
+\begin{quote}
+\textbf{Algorithm: Offline ECM parameter extraction from a single pulse test} \\[2pt]
+\textbf{Input:} measured $\{t_i, I_i, V_i\}$ over one current pulse and subsequent relaxation; chosen ECM order $n \in \{0, 1, 2\}$. \\
+\textbf{Output:} parameter set $\{R_0, (R_1, C_1), \dots, (R_n, C_n)\}$ at the tested SOC and temperature.
+\begin{enumerate}
+	\item Identify the sample index $i_0$ at which the current pulse begins; record $I_0 = I_{i_0}$.
+	\item Compute $R_0$ from the instantaneous voltage step at $i_0$ (and cross-check using the step at pulse removal).
+	\item If $n = 0$: terminate; the Rint model requires no further steps.
+	\item Extract the post-pulse relaxation segment $\{t_i, V_i\}_{i > i_{\text{end}}}$, where $i_{\text{end}}$ denotes the sample at which the pulse current returns to zero.
+	\item Fit the relaxation segment to a sum of $n$ decaying exponentials using nonlinear least squares (Chapter~4), initialized using graphical estimates of the time constant(s) as described in Sections~\ref{ssec:thevenin}--\ref{ssec:2rc}.
+	\item Recover $(R_i, C_i)$ for $i = 1, \dots, n$ from the fitted amplitudes and time constants.
+	\item Repeat steps 1--6 at each SOC and temperature grid point required by the intended application, and assemble the resulting parameter set into a lookup table or fitted surface $R_0(z,T)$, $R_i(z,T)$, $C_i(z,T)$.
+	\item Validate the assembled parameter set by simulating the ECM's response to an independent dynamic current profile (e.g. a drive-cycle segment) not used in steps 1--7, and compare against measured terminal voltage.
+\end{enumerate}
+\end{quote}
+
+This eight-step procedure is deliberately model-order-agnostic (governed by the single parameter $n$), reflecting the fact that the Rint, Thevenin, and dual-polarization models developed in this section share a common extraction logic that differs only in how many exponential modes must be resolved from the relaxation data -- itself a direct consequence of the number of RC branches retained in the underlying circuit topology.
+
+\subsection{Offline versus Online Identification: A Preview}
+\label{ssec:offline_online_preview}
+
+The parameter-extraction procedures sketched in Sections~\ref{ssec:thevenin} and~\ref{ssec:2rc} -- reading resistances and time constants directly off a pulse response -- are examples of \emph{offline} identification: the cell is subjected to a dedicated, controlled characterization test (Chapter~3), and the resulting data set is processed, generally without hard real-time constraints, to produce a single parameter estimate (or a lookup table of estimates across SOC and temperature). Chapter~4 develops this offline approach formally, using least-squares regression and heuristic optimization to identify ECM parameters from richer excitation than a single pulse.
+
+Offline identification, however, cannot track parameter changes that occur during the cell's operational lifetime -- most importantly, the gradual increase in $R_0$ and change in RC-branch behavior associated with aging. \emph{Online} identification methods, developed in Chapters~5 through~7, instead update the parameter estimates continuously during normal operation, using the same state-space structures derived in this section (Equations~\eqref{eq:thevenin_ssm} and~\eqref{eq:dp_ssm}) as the model onto which recursive least squares, Kalman-filter-based, or observer-based estimators are applied. The distinction matters for how the ECM structures of this chapter are used: the model equations themselves do not change between the offline and online cases, but the algorithm that maps measured data to parameter values does, and the two approaches are compared systematically, including their respective advantages, computational costs, and suitability for tracking time-varying (aging-related) parameter drift, later in this report.
+
+Higher-order ECM extensions beyond the dual-polarization model -- including the PNGV, Randles, and fractional-order topologies -- are documented in the broader ECM literature \cite{mdpi_ecm_review_2026} but are not developed further here, consistent with the report's stated scope (Chapter~1, Section~1.6).
+
+\section{Electrochemical Physics-Based Models}
+\label{sec:electrochemical}
+
+Where ECMs treat the cell as a black-box two-terminal electrical element, electrochemical physics-based models resolve the underlying transport and reaction processes -- lithium-ion diffusion in the solid active-material particles, lithium-ion migration and diffusion in the liquid electrolyte, and Butler--Volmer interfacial reaction kinetics -- using coupled, spatially distributed governing equations derived from porous-electrode theory and concentrated-solution theory. These models are substantially more expensive computationally than ECMs, but their parameters correspond to identifiable physical and material properties (diffusivities, reaction rate constants, active material volume fractions, particle radii), which makes them attractive both for cell design and for degradation/aging studies where a physically grounded explanation of parameter drift is required, as flagged for further discussion in Chapter~7.
+
+\subsection{Key Modeling Assumptions of Porous-Electrode Theory}
+\label{ssec:porous_electrode_assumptions}
+
+The electrochemical models developed in this section rest on porous-electrode theory, and it is useful to state its central simplifying assumptions before proceeding to the specific P2D and SPM formulations, since these assumptions bound the physical regimes in which the models below can be expected to remain accurate:
+
+\begin{enumerate}
+	\item \textbf{Volume averaging.} Rather than resolving the true three-dimensional porous microstructure of each electrode, the electrode is treated as a superposition of two continuous, interpenetrating phases -- a solid (active material) phase and a liquid (electrolyte) phase -- each occupying a volume fraction ($\varepsilon_s$, $\varepsilon_e$) at every macroscopic point $x$ \cite{p2d_review_arxiv_2022}.
+	\item \textbf{Representative-particle geometry.} Solid-phase diffusion is captured by a single representative spherical particle of radius $R_p$ at each macroscopic position, rather than by the true, generally non-spherical and polydisperse particle population present in a real electrode.
+	\item \textbf{Effective transport properties.} Tortuosity and constriction effects of the true porous microstructure are lumped into empirical correction factors (often Bruggeman-type exponents) applied to the effective diffusivities and conductivities $D_e^{\text{eff}}$, $\sigma^{\text{eff}}$, $\kappa^{\text{eff}}$ appearing in Equations~\eqref{eq:p2d_electrolyte_conc}--\eqref{eq:p2d_charge_conservation}.
+	\item \textbf{Dilute or moderately concentrated solution behavior.} The electrolyte transport equations used here follow from concentrated-solution theory but retain a relatively small set of transport parameters (effective diffusivity, transference number, ionic conductivity); more detailed multicomponent electrolyte transport theories exist but are not required for the parameter-estimation scope of this report.
+\end{enumerate}
+
+These assumptions are shared by both the full P2D model of Section~\ref{ssec:p2d} and its single particle reduction in Section~\ref{ssec:spm}; the two models differ not in these foundational assumptions but in the additional simplifications the SPM applies on top of them, as detailed in Section~\ref{ssec:spm}.
+
+\subsection{Pseudo-Two-Dimensional (P2D) Model}
+\label{ssec:p2d}
+
+\subsubsection{Origin and Governing Framework}
+
+The pseudo-two-dimensional (P2D) model, also known as the Doyle--Fuller--Newman (DFN) model, was first formulated by Doyle, Fuller, and Newman for galvanostatic charge and discharge of a lithium/polymer/insertion cell \cite{doyle_fuller_newman_1993}, and was subsequently extended to the dual lithium-ion insertion cell configuration representative of modern lithium-ion batteries by Fuller, Doyle, and Newman \cite{fuller_doyle_newman_1994}. It has since become the most widely used physics-based reference model in lithium-ion battery research \cite{p2d_review_arxiv_2022,dfn_continuum_review_2022}.
+
+The model treats each electrode as a porous medium in which solid active-material particles are embedded in a liquid electrolyte that fills the pore space. Because resolving the true, geometrically complex porous microstructure in three dimensions is computationally prohibitive, porous-electrode theory instead volume-averages the transport equations over a representative elementary volume, producing macrohomogeneous solid- and electrolyte-phase continua defined along a single through-thickness coordinate $x$, spanning the negative electrode, separator, and positive electrode \cite{p2d_review_arxiv_2022}. At each point $x$, a representative spherical particle of radius $R_p$ is introduced to describe solid-phase lithium diffusion along a second, ``pseudo'' radial coordinate $r$ -- hence the name pseudo-\emph{two}-dimensional \cite{dfn_continuum_review_2022}.
+
+\subsubsection{Governing Equations}
+
+\paragraph{Solid-phase diffusion.} Within the representative spherical particle at each macroscopic position $x$, lithium transport is governed by Fick's second law in spherical coordinates,
+
+\begin{equation}
+	\frac{\partial c_s(x,r,t)}{\partial t} = \frac{1}{r^2}\frac{\partial}{\partial r}\left(D_s\, r^2 \frac{\partial c_s(x,r,t)}{\partial r}\right), \qquad 0 \le r \le R_p,
+	\label{eq:p2d_solid_diffusion}
+\end{equation}
+
+\noindent subject to the symmetry condition $\left.\partial c_s/\partial r\right|_{r=0} = 0$ and a flux boundary condition at the particle surface $r = R_p$ that couples solid-phase diffusion to the interfacial reaction (faradaic) current density $j$,
+
+\begin{equation}
+	-D_s \left.\frac{\partial c_s}{\partial r}\right|_{r=R_p} = \frac{j(x,t)}{a\, F},
+	\label{eq:p2d_flux_bc}
+\end{equation}
+
+\noindent where $c_s$ is the solid-phase lithium concentration, $D_s$ is the solid-phase diffusion coefficient (a key parameter-estimation target, see Chapter~4), $a$ is the specific interfacial surface area of the porous electrode, and $F$ is Faraday's constant \cite{p2d_review_arxiv_2022}.
+
+\paragraph{Electrolyte-phase transport.} Lithium-ion transport in the electrolyte is governed by a mass-conservation equation for the salt concentration $c_e(x,t)$,
+
+\begin{equation}
+	\varepsilon_e \frac{\partial c_e}{\partial t} = \frac{\partial}{\partial x}\left(D_e^{\text{eff}} \frac{\partial c_e}{\partial x}\right) + \frac{1 - t_+^0}{F}\, j(x,t),
+	\label{eq:p2d_electrolyte_conc}
+\end{equation}
+
+\noindent where $\varepsilon_e$ is the electrolyte volume fraction (porosity), $D_e^{\text{eff}}$ is the effective electrolyte diffusivity (corrected for tortuosity), and $t_+^0$ is the lithium-ion transference number.
+
+\paragraph{Charge conservation.} Charge conservation in the solid and electrolyte phases is described by Ohm's-law-type relations,
+
+\begin{equation}
+	\begin{aligned}
+		\frac{\partial}{\partial x}\left(\sigma^{\text{eff}} \frac{\partial \phi_s}{\partial x}\right) - j(x,t) &= 0, \\
+		\frac{\partial}{\partial x}\left(\kappa^{\text{eff}} \frac{\partial \phi_e}{\partial x}\right) + \frac{\partial}{\partial x}\left(\kappa_D^{\text{eff}} \frac{\partial \ln c_e}{\partial x}\right) + j(x,t) &= 0,
+	\end{aligned}
+	\label{eq:p2d_charge_conservation}
+\end{equation}
+
+\noindent where $\phi_s$ and $\phi_e$ are the solid- and electrolyte-phase potentials, $\sigma^{\text{eff}}$ is the effective solid-phase electronic conductivity, and $\kappa^{\text{eff}}$, $\kappa_D^{\text{eff}}$ are the effective ionic and diffusional conductivities of the electrolyte.
+
+\paragraph{Interfacial kinetics.} The reaction (faradaic) current density $j(x,t)$ that couples the solid, electrolyte, and diffusion equations above is given by Butler--Volmer kinetics,
+
+\begin{equation}
+	j(x,t) = a\, i_0(x,t)\left[\exp\!\left(\frac{\alpha_a F}{RT}\,\eta(x,t)\right) - \exp\!\left(-\frac{\alpha_c F}{RT}\,\eta(x,t)\right)\right],
+	\label{eq:p2d_bv}
+\end{equation}
+
+\noindent where $i_0$ is the exchange current density (itself a function of $c_e$, surface $c_s$, and temperature), $\alpha_a, \alpha_c$ are the anodic and cathodic transfer coefficients, $R$ is the universal gas constant, $T$ is absolute temperature, and $\eta = \phi_s - \phi_e - U(c_s^{\text{surf}})$ is the local surface overpotential, with $U(\cdot)$ the equilibrium open-circuit potential of the electrode material as a function of local surface lithium concentration \cite{p2d_review_arxiv_2022,ionworks_dfn}.
+
+\subsubsection{Model Parameters}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Representative parameters of the P2D (Doyle--Fuller--Newman) model.}
+	\label{tab:p2d_params}
+	\begin{tabular}{p{2.3cm}p{6.6cm}p{2.9cm}}
+		\toprule
+		Symbol & Physical interpretation & Category \\
+		\midrule
+		$D_s$ & Solid-phase lithium diffusion coefficient (per electrode) & Transport \\
+		$D_e^{\text{eff}}$ & Effective electrolyte diffusion coefficient & Transport \\
+		$\sigma^{\text{eff}}, \kappa^{\text{eff}}$ & Effective solid/electrolyte conductivities & Transport \\
+		$k$ (via $i_0$) & Reaction rate constant governing exchange current density & Kinetics \\
+		$\alpha_a, \alpha_c$ & Charge-transfer coefficients & Kinetics \\
+		$R_p$ & Particle radius (per electrode) & Geometry \\
+		$\varepsilon_e, \varepsilon_s$ & Electrolyte and solid-phase volume fractions & Geometry \\
+		$t_+^0$ & Lithium-ion transference number & Electrolyte property \\
+		$c_{s,\max}$ & Maximum solid-phase lithium concentration & Material property \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsubsection{Dimensionless Groups and Operating Regimes}
+
+Two dimensionless groups are widely used to characterize which physical process -- solid-phase diffusion, electrolyte transport, or reaction kinetics -- limits cell performance under a given operating condition, and are useful here because they anticipate which P2D parameters are likely to be well or poorly identifiable from terminal data at a given C-rate, a theme developed formally in Chapter~4. The first is the solid-phase diffusion time constant, which will be formally defined in Equation~\eqref{eq:diffusion_time_constant}, compared against the discharge time scale $\tau_{\text{disch}} = Q_n / I$; when $\tau_{D} \ll \tau_{\text{disch}}$ (low C-rate, or fast solid diffusion), the particle remains close to spatially uniform lithiation, and $D_s$ has limited observable influence on terminal voltage. The second is a Damk\"ohler-type ratio comparing the characteristic reaction rate to the characteristic diffusion rate,
+
+\begin{equation}
+	\mathrm{Da} = \frac{k\, R_p}{D_s},
+	\label{eq:damkohler}
+\end{equation}
+
+\noindent which indicates, qualitatively, whether the interfacial reaction (captured by $k$, via $i_0$ in Equation~\eqref{eq:p2d_bv}) or solid-phase diffusion (captured by $D_s$) is the rate-limiting step for a given electrode and operating condition. Low-$\mathrm{Da}$ conditions (reaction-limited) tend to make $k$ the dominant, and hence best-identified, kinetic parameter from terminal-voltage data, while high-$\mathrm{Da}$ conditions (diffusion-limited) shift observability toward $D_s$. This regime-dependence of parameter observability is one of the reasons that experimental identification protocols (Chapter~3) deliberately span a range of C-rates rather than relying on a single operating condition, and it reappears in the general identifiability discussion of Chapter~4 and the multi-time-scale estimation framework of Chapter~7.
+
+\subsubsection{Boundary and Initial Conditions}
+
+The PDE system of Equations~\eqref{eq:p2d_solid_diffusion}--\eqref{eq:p2d_charge_conservation} is closed by a complete set of boundary and initial conditions, summarized in Table~\ref{tab:p2d_bc}. These conditions encode two physical facts that are easy to overlook when the equations are viewed in isolation: first, no lithium or current crosses the outer current-collector boundaries except through the external circuit; second, the separator region carries ionic current only, since it contains no active material and therefore no solid-phase reaction.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Representative boundary and initial conditions for the P2D model.}
+	\label{tab:p2d_bc}
+	\begin{tabular}{p{4.0cm}p{8.2cm}}
+		\toprule
+		Location & Condition \\
+		\midrule
+		Particle center ($r=0$) & Zero-flux symmetry condition, $\partial c_s/\partial r = 0$ \\
+		Particle surface ($r=R_p$) & Flux set by local reaction current density, Equation~\eqref{eq:p2d_flux_bc} \\
+		Negative current collector ($x=0$) & $\partial \phi_e/\partial x = 0$ (no ionic current crosses); solid-phase current equals applied cell current $I(t)$ \\
+		Positive current collector ($x=L$) & Symmetric counterpart of the above \\
+		Separator region & $j(x,t) = 0$ (no reaction; ionic current only) \\
+		Initial condition ($t=0$) & Uniform $c_s(x,r,0) = c_{s,0}(x)$ consistent with the initial SOC; uniform $c_e(x,0) = c_{e,0}$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsubsection{Numerical Solution Approaches}
+
+The coupled PDE-algebraic system of the P2D model does not, in general, admit a closed-form analytical solution and must be solved numerically. Two aspects of the discretization are typically handled separately: the through-thickness ($x$) domain, and the per-particle radial ($r$) domain.
+
+\begin{itemize}
+	\item \textbf{Through-thickness discretization.} The negative electrode, separator, and positive electrode domains are each discretized using finite-difference or finite-volume methods, producing a set of coupled algebraic and ordinary differential equations at each spatial node. Finite-volume formulations are commonly preferred for their inherent conservation properties across the domain interfaces (electrode/separator boundaries).
+	\item \textbf{Radial (particle) discretization.} At each through-thickness node, the particle diffusion equation, Equation~\eqref{eq:p2d_solid_diffusion}, is discretized separately along $r$, again typically via finite volume or finite difference methods, or, in some formulations, via a reduced-order polynomial/parabolic profile approximation that avoids resolving the full radial field and instead tracks only volume-averaged and surface concentration (an approach closely related to, and motivating, the single particle model of Section~\ref{ssec:spm}).
+	\item \textbf{Time integration.} The resulting large system of coupled differential-algebraic equations (DAEs) is integrated in time using implicit solvers suited to stiff systems, since the P2D model's combination of fast interfacial kinetics and slow diffusion processes produces a wide range of characteristic timescales.
+\end{itemize}
+
+This numerical burden is the direct, practical reason that the P2D model is used in this report primarily as a reference and design/aging-study tool (as stated in Section~\ref{ssec:p2d_computational} below) rather than as an online estimation model, motivating the reduced-order single particle model developed next.
+
+\subsubsection{Computational Burden and Identifiability}
+\label{ssec:p2d_computational}
+
+The P2D model, being a system of coupled nonlinear PDEs and algebraic equations, is markedly more expensive to solve than any ECM and is therefore rarely executed directly on embedded BMS hardware; its principal uses in the parameter-estimation context of this report are as a high-fidelity reference against which reduced-order models (Section~\ref{ssec:spm}) and even ECMs are validated, and as the model of choice for detailed aging and degradation studies (flagged in Chapter~7). Parameter identification of the full P2D parameter set is a substantially harder problem than ECM identification: reported efforts to identify the roughly 88 parameters of a P2D-type electrochemical model using genetic-algorithm-based optimization on a computing cluster required on the order of three weeks of wall-clock time \cite{spm_aging_identification_2019}, and formal identifiability analyses using Fisher-information-based methods have been applied specifically because not every P2D parameter is uniquely recoverable from terminal voltage/current data alone \cite{spm_aging_identification_2019}. This identifiability concern is developed further, in general terms applicable to all model families, in Chapter~4.
+
+\subsection{Single Particle Model (SPM)}
+\label{ssec:spm}
+
+\subsubsection{Motivation}
+
+The single particle model (SPM) is a structural simplification of the P2D model that removes the electrolyte-phase spatial dependence (and, in its most basic form, the through-thickness electrode dependence entirely), representing each electrode by a single representative spherical particle undergoing solid-phase diffusion, coupled to the external circuit through Butler--Volmer kinetics evaluated at a single effective condition rather than a spatially resolved field. The SPM was developed and reviewed in the context of predicting lithium-ion battery cycling performance by Santhanagopalan, Guo, Ramadass, and White \cite{santhanagopalan_2006}, and has since become the standard reduced-order physics-based model for applications -- including parameter and state estimation -- where the full computational cost of the P2D model is not justified \cite{spm_thermal_iop_2010,spm_thermal_iop_2011}.
+
+\subsubsection{Governing Equations}
+
+The SPM retains the solid-phase diffusion equation of the P2D model, Equation~\eqref{eq:p2d_solid_diffusion}, applied independently to one representative particle per electrode (negative, $n$, and positive, $p$),
+
+\begin{equation}
+	\frac{\partial c_{s,e}(r,t)}{\partial t} = \frac{1}{r^2}\frac{\partial}{\partial r}\left(D_{s,e}\, r^2\, \frac{\partial c_{s,e}(r,t)}{\partial r}\right), \qquad e \in \{n, p\},
+	\label{eq:spm_diffusion}
+\end{equation}
+
+\noindent with the surface flux boundary condition of Equation~\eqref{eq:p2d_flux_bc} evaluated using a spatially uniform reaction current density obtained directly from the applied cell current $I(t)$ rather than from a spatially resolved $j(x,t)$ field,
+
+\begin{equation}
+	j_e = \frac{I(t)}{a_e\, F\, L_e}, \qquad e \in \{n, p\},
+	\label{eq:spm_current_split}
+\end{equation}
+
+\noindent where $L_e$ is the electrode thickness. The cell terminal voltage is then reconstructed algebraically from the two particles' surface concentrations and the applied current,
+
+\begin{equation}
+	V_t(t) = U_p\big(c_{s,p}^{\text{surf}}\big) - U_n\big(c_{s,n}^{\text{surf}}\big) + \eta_p - \eta_n - I(t) R_{e}(I,T),
+	\label{eq:spm_terminal}
+\end{equation}
+
+\noindent where $U_p(\cdot)$ and $U_n(\cdot)$ are the equilibrium open-circuit potentials of the positive and negative electrode materials, $\eta_p, \eta_n$ are the Butler--Volmer surface overpotentials obtained from an algebraic (rather than PDE-governed) form of Equation~\eqref{eq:p2d_bv}, and $R_e(I,T)$ is a lumped resistance term used to approximate electrolyte-phase ohmic and concentration polarization, which the basic SPM does not resolve explicitly \cite{spm_thermal_iop_2010}.
+
+\subsubsection{Algebraic Overpotential and the Link to ECM Overpotentials}
+
+Because the SPM evaluates Butler--Volmer kinetics, Equation~\eqref{eq:p2d_bv}, at a single spatially uniform condition per electrode rather than a distributed field, Equation~\eqref{eq:p2d_bv} can be inverted algebraically for the surface overpotential $\eta_e$ given the (now scalar) reaction current density $j_e$ of Equation~\eqref{eq:spm_current_split}. Using the common assumption of equal anodic and cathodic transfer coefficients $\alpha_a = \alpha_c = 0.5$, Equation~\eqref{eq:p2d_bv} reduces to a hyperbolic-sine form that can be inverted directly,
+
+\begin{equation}
+	\eta_e = \frac{2RT}{F}\, \sinh^{-1}\!\left(\frac{j_e}{2\, a_e\, i_{0,e}}\right), \qquad e \in \{n,p\},
+	\label{eq:spm_overpotential}
+\end{equation}
+
+\noindent which is the closed-form expression used to evaluate $\eta_p, \eta_n$ in the terminal-voltage relation, Equation~\eqref{eq:spm_terminal}. It is instructive to note the structural parallel between Equation~\eqref{eq:spm_terminal} and the ECM terminal-voltage relation, Equation~\eqref{eq:generic_ecm}: both express terminal voltage as an equilibrium potential term minus a set of overpotentials and an ohmic drop. The essential difference is that the ECM's $V_{oc}(z)$ and RC overpotentials are empirical fits to measured data, whereas the SPM's $U_p(\cdot) - U_n(\cdot)$ and $\eta_p, \eta_n$ are computed from physically parameterized diffusion and kinetic equations. This structural correspondence is part of why ECM parameters can, under certain conditions, be related back to underlying electrochemical parameters -- a connection revisited briefly in Chapter~7 when discussing multi-time-scale dual estimation.
+
+\subsubsection{Characteristic Diffusion Time Scale}
+
+A useful diagnostic quantity, both for understanding SPM behavior and for anticipating the identifiability of $D_s$ from terminal data, is the characteristic solid-phase diffusion time constant,
+
+\begin{equation}
+	\tau_{D,e} = \frac{R_{p,e}^2}{D_{s,e}}, \qquad e \in \{n,p\},
+	\label{eq:diffusion_time_constant}
+\end{equation}
+
+\noindent which sets the timescale over which a step change in surface flux propagates to the particle center. When $\tau_{D,e}$ is short relative to the timescale of the applied current profile, the particle behaves as though uniformly lithiated at every instant, and $D_s$ becomes only weakly observable from terminal voltage data -- an electrochemical-model analogue of the ECM identifiability concern raised in Section~\ref{sssec:2rc_identifiability}, and a theme returned to explicitly in the general identifiability discussion of Chapter~4.
+
+\subsubsection{Relationship to the P2D Model and to ECMs}
+
+The SPM occupies a middle ground between the full P2D model and the ECMs of Section~\ref{sec:ecm}: it retains a physically interpretable solid-phase diffusion parameter $D_s$ per electrode, but discards the spatially resolved electrolyte-phase description, which limits its accuracy at high C-rates where electrolyte-phase concentration polarization becomes significant \cite{spm_thermal_iop_2010}. This limitation is well documented in the literature: because the basic SPM neglects concentration polarization in the electrolyte, its accuracy degrades under high-current operating conditions relative to the full P2D model \cite{improved_spm_sciencedirect_2020}, which has motivated extended SPM variants that reintroduce an approximate electrolyte-phase correction while retaining most of the SPM's computational advantage \cite{improved_spm_sciencedirect_2020}.
+
+\subsubsection{Parameter Identification Considerations}
+
+Because the SPM parameter set (diffusivities, reaction rate constants, and a small number of lumped resistance/geometry terms) is considerably smaller than the full P2D set, it is more tractable to identify from terminal voltage/current data. Reported work has used gradient-based Levenberg--Marquardt optimization to identify a small number (on the order of five) of key SPM parameters from experimental data \cite{spm_aging_identification_2019}, and formal identifiability analysis of lumped-parameter single-particle-type models using Fisher-information methods has been used to determine, prior to fitting, which parameter combinations can be reliably distinguished given the available excitation \cite{spm_aging_identification_2019}. This identifiability-first methodology is discussed further, in the general context applicable to all model families in this report, in Chapter~4.
+
+\begin{table}[htbp]
+	\centering
+	\caption{P2D model versus single particle model: structural comparison.}
+	\label{tab:p2d_vs_spm}
+	\begin{tabular}{p{3.0cm}p{5.2cm}p{5.2cm}}
+		\toprule
+		Attribute & P2D (DFN) & SPM \\
+		\midrule
+		Spatial resolution & Through-thickness ($x$) plus per-particle radial ($r$) & Radial ($r$) only, one particle per electrode \\
+		Electrolyte-phase transport & Fully resolved & Neglected or approximated by a lumped resistance \\
+		Governing equations & Coupled nonlinear PDE system, Eqs.~\eqref{eq:p2d_solid_diffusion}--\eqref{eq:p2d_bv} & Reduced PDE set, Eqs.~\eqref{eq:spm_diffusion}--\eqref{eq:spm_terminal} \\
+		Typical parameter count & On the order of tens (e.g. $\sim$88 reported in \cite{spm_aging_identification_2019}) & Small subset (e.g. $\sim$5 key parameters reported in \cite{spm_aging_identification_2019}) \\
+		Accuracy at high C-rate & High (reference model) & Reduced, due to neglected electrolyte concentration polarization \cite{improved_spm_sciencedirect_2020} \\
+		Typical use in estimation & Reference/validation model; detailed aging studies & Reduced-order physics-based estimation, computationally feasible for near-real-time use \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Model Validation Principles for Electrochemical Models}
+\label{ssec:electrochemical_validation}
+
+Validating an identified P2D or SPM parameter set follows the same general principle stated in the offline ECM extraction procedure of Section~\ref{ssec:ecm_pseudocode} -- namely, that a model should be evaluated on excitation data distinct from that used for fitting -- but the practice differs in two respects that are worth noting explicitly before the report moves on to experimental characterization in Chapter~3. First, because electrochemical model parameters correspond to identifiable physical quantities, a partial, independent check is often available in the form of literature or supplier-reported material properties (for example, a manufacturer-reported active-material particle size can bound the plausible range of an identified $R_p$), a cross-check that has no direct analogue for ECM parameters, whose values are defined only relative to the fitted circuit. Second, because the SPM is itself a simplification of the P2D model, a natural and widely used validation step -- distinct from comparison against experimental data -- is to compare SPM-predicted terminal voltage against P2D-predicted terminal voltage for the same current profile and parameter set, using the P2D model as a reference solution; a widening discrepancy between the two, particularly at high C-rate, is a direct, quantitative indicator of the point at which the SPM's neglect of electrolyte-phase concentration polarization becomes non-negligible, consistent with the accuracy limitation noted in Section~\ref{ssec:spm} \cite{improved_spm_sciencedirect_2020}. Both forms of validation are revisited, together with experimental validation against measured cell data, in the broader validation-methodology discussion of Chapter~11.
+
+\section{Thermal-Coupled Models}
+\label{sec:thermal}
+
+\subsection{Motivation for Thermal Coupling}
+
+Every model family introduced in Sections~\ref{sec:ecm} and~\ref{sec:electrochemical} contains parameters that are, physically, functions of temperature: the ohmic resistance $R_0$ of an ECM increases as temperature falls (reduced ionic mobility in the electrolyte), the solid-phase diffusivity $D_s$ of a P2D or SPM model follows an Arrhenius-type temperature dependence, and reaction rate constants in Butler--Volmer kinetics are similarly temperature-activated. A model that treats temperature as a fixed external input, rather than as a dynamic quantity that itself depends on the cell's own electrical operation (through resistive and reaction-related heat generation), cannot correctly predict behavior under conditions of significant self-heating -- high C-rate operation, fast charging, or degraded cells with elevated internal resistance. Thermal-coupled models close this loop by pairing an energy balance with the electrical or electrochemical description, so that heat generation, temperature rise, and temperature-dependent parameter variation are captured self-consistently.
+
+\subsection{Governing Energy Balance}
+
+The starting point for essentially all thermal-coupled battery models in the literature is the general energy balance for battery systems derived by Bernardi, Pawlikowski, and Newman, which accounts for heat generation due to electrochemical reaction, Joule (ohmic) heating, phase changes, and mixing/entropic effects within a single, thermodynamically consistent framework \cite{bernardi_1985}. In its commonly used lumped (cell-average) engineering form, the volumetric heat generation rate $\dot{q}$ is expressed as
+
+\begin{equation}
+	\dot{q}(t) = \frac{I(t)}{V_{\text{cell}}}\left[\big(V_{oc}(z,T) - V_t(t)\big) - T\,\frac{\partial V_{oc}}{\partial T}\right],
+	\label{eq:bernardi_lumped}
+\end{equation}
+
+\noindent where $V_{\text{cell}}$ is the cell (or control-volume) volume, the first bracketed term $(V_{oc} - V_t)$ represents the irreversible heat generated by ohmic and polarization losses (directly traceable to the ECM overpotential terms of Equation~\eqref{eq:generic_ecm}), and the second term, involving the entropic coefficient $\partial V_{oc}/\partial T$, represents the reversible heat of reaction. This lumped form, and the coefficient $dU_{oc}/dT$ specifically, appears widely in subsequent thermal-management literature building on the original Bernardi--Pawlikowski--Newman energy balance \cite{bernardi_1985}. For a fully distributed (spatially resolved) treatment, the same physical principle is expressed as a partial differential energy equation coupling local heat generation to conductive transport, following the volume-averaging approach used to derive a general thermal-electrochemical coupled model of battery systems \cite{gu_wang_2000},
+
+\begin{equation}
+	\rho c_p \frac{\partial T(x,t)}{\partial t} = \frac{\partial}{\partial x}\left(\lambda_{\text{eff}} \frac{\partial T}{\partial x}\right) + \dot{q}(x,t) - \frac{h A_s}{V_{\text{cell}}}\big(T - T_\infty\big),
+	\label{eq:thermal_pde}
+\end{equation}
+
+\noindent where $\rho$, $c_p$, and $\lambda_{\text{eff}}$ are the effective density, specific heat capacity, and thermal conductivity of the cell, $h$ is the convective heat-transfer coefficient to the surrounding environment at ambient temperature $T_\infty$, and $A_s$ is the cell's external surface area available for convective heat rejection.
+
+\subsection{Lumped versus Distributed Thermal Treatment}
+
+Whether a lumped (single-temperature, ordinary-differential) or distributed (spatially resolved, partial-differential) thermal model is warranted depends on the relative resistance to heat conduction within the cell compared with the resistance to convective heat transfer at its surface, expressed through the dimensionless Biot number,
+
+\begin{equation}
+	\mathrm{Bi} = \frac{h L_c}{\lambda_{\text{eff}}},
+	\label{eq:biot}
+\end{equation}
+
+\noindent where $L_c$ is a characteristic length (e.g. half-thickness for a pouch or prismatic cell). When $\mathrm{Bi} \ll 1$, internal conduction is fast relative to surface heat rejection, internal temperature gradients remain small, and the lumped ordinary-differential simplification of Equation~\eqref{eq:thermal_pde},
+
+\begin{equation}
+	m c_p \frac{dT(t)}{dt} = \dot{Q}(t) - h A_s \big(T(t) - T_\infty\big), \qquad \dot{Q}(t) = \dot{q}(t)\, V_{\text{cell}},
+	\label{eq:lumped_thermal}
+\end{equation}
+
+\noindent is an adequate and computationally convenient representation, and it is the form most commonly paired with ECMs in real-time BMS thermal tracking. When $\mathrm{Bi}$ is not small -- for instance in large-format prismatic or cylindrical cells with low through-plane thermal conductivity -- internal temperature gradients become significant, and the distributed formulation of Equation~\eqref{eq:thermal_pde}, or its multidimensional extensions used in thermal-electrochemical coupled modeling \cite{gu_wang_2000}, is required to avoid underestimating peak internal (as opposed to surface) temperature.
+
+\paragraph{Illustrative example (invented numerical values, for demonstration only).} Consider a cell for which a hypothetical thermal characterization yields $h = 10\ \text{W}\,\text{m}^{-2}\,\text{K}^{-1}$, a characteristic through-plane length $L_c = 5\ \text{mm}$, and an effective thermal conductivity $\lambda_{\text{eff}} = 1\ \text{W}\,\text{m}^{-1}\,\text{K}^{-1}$. Equation~\eqref{eq:biot} would then give $\mathrm{Bi} = (10)(0.005)/1 = 0.05 \ll 1$, supporting use of the lumped model, Equation~\eqref{eq:lumped_thermal}, for this hypothetical cell. As with the illustrative RC-parameter example of Section~\ref{ssec:thevenin}, these values are invented for demonstration purposes only and do not represent a measured or cited cell.
+
+\subsection{Thermal Behavior and Safety: A Preview}
+
+The heat-generation and temperature-rise relationships developed in this section connect directly to the safety motivation for parameter estimation raised in Chapter~1 (Section~1.3.1): an ohmic resistance $R_0$ that has increased due to aging directly increases the irreversible heat-generation term of Equation~\eqref{eq:bernardi_lumped} for a given current, so that an aged cell self-heats more, for the same applied load, than a fresh cell. Because the temperature-dependent parameters discussed in Section~\ref{ssec:thermal_params} in turn feed back into further changes in resistance and reaction kinetics, an under-cooled or highly aged cell can enter a positive feedback regime that is a known precursor to thermal runaway. This report does not develop a thermal-runaway or abuse model in detail, as that lies outside the parameter-estimation scope defined in Chapter~1; the treatment here is limited to establishing why accurate, temperature-aware parameter tracking (Chapters~5--7) is a safety-relevant, and not merely an accuracy-relevant, requirement.
+
+\subsection{Coupling to Electrical and Electrochemical Models}
+
+\subsubsection{ECM Thermal Coupling}
+
+For an ECM, thermal coupling is most often implemented by (i) evaluating Equation~\eqref{eq:bernardi_lumped} using the ohmic and polarization overpotentials already computed by the circuit model (Equation~\eqref{eq:generic_ecm}), (ii) integrating a lumped or two-node thermal capacitance model such as Equation~\eqref{eq:thermal_pde} reduced to ordinary-differential form to obtain the instantaneous cell temperature, and (iii) feeding the updated temperature back into temperature-dependent lookup tables or empirical correlations for $R_0(z,T)$, $R_1(z,T)$, $C_1(z,T)$ (and, where applicable, $R_2, C_2$). This feedback loop is precisely the mechanism by which SOH, SOC, and temperature dependence of ECM parameters have been incorporated into a comprehensive equivalent circuit model reported in the recent literature, with the explicit goal of improving BMS reliability under real-world thermal operating conditions \cite{sciencedirect_comprehensive_ecm_2021}.
+
+\subsubsection{Electrochemical-Thermal Coupling}
+
+For P2D and SPM-type models, thermal coupling additionally requires that the temperature dependence of transport and kinetic parameters ($D_s$, $D_e^{\text{eff}}$, $k$) be made explicit, typically through Arrhenius-type relations of the form
+
+\begin{equation}
+	\Theta(T) = \Theta_{\text{ref}}\, \exp\!\left[-\frac{E_{a,\Theta}}{R}\left(\frac{1}{T} - \frac{1}{T_{\text{ref}}}\right)\right],
+	\label{eq:arrhenius}
+\end{equation}
+
+\noindent where $\Theta$ represents a generic temperature-sensitive parameter (e.g. $D_s$ or $k$), $\Theta_{\text{ref}}$ is its value at reference temperature $T_{\text{ref}}$, and $E_{a,\Theta}$ is the corresponding activation energy. A thermal-electrochemical coupled modeling approach of this type, which simultaneously predicts electrochemical and thermal behavior by coupling the thermal energy equation to a multiphase micro-macroscopic electrochemical model through heat generation and temperature-dependent physicochemical properties, was developed by Gu and Wang and remains a foundational reference for multidimensional thermal-electrochemical battery modeling \cite{gu_wang_2000}. A single-particle-model-specific thermal extension, incorporating the temperature dependence of solid-phase diffusivity, reaction rate constants, and electrode open-circuit potentials together with a nonlinear, current- and temperature-dependent solution-phase resistance term, has similarly been developed and validated against a distributed porous-electrode reference model \cite{spm_thermal_iop_2010,spm_thermal_iop_2011}.
+
+\subsection{Parameters Introduced by Thermal Coupling}
+\label{ssec:thermal_params}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Additional parameters introduced by thermal-coupled models.}
+	\label{tab:thermal_params}
+	\begin{tabular}{p{2.3cm}p{6.6cm}p{2.9cm}}
+		\toprule
+		Symbol & Physical interpretation & Estimation route \\
+		\midrule
+		$\rho, c_p$ & Effective cell density and specific heat capacity & Calorimetry (out of scope; treated as known material data) \\
+		$\lambda_{\text{eff}}$ & Effective thermal conductivity (often anisotropic: in-plane vs.\ through-plane) & Manufacturer data / dedicated thermal characterization \\
+		$h$ & Convective heat-transfer coefficient to ambient & Empirical correlation or dedicated test \\
+		$dU_{oc}/dT$ & Entropic coefficient (reversible heat term) & Potentiometric measurement over temperature \\
+		$E_{a,\Theta}$ & Activation energy of temperature-sensitive transport/kinetic parameter $\Theta$ & Arrhenius fit from tests at multiple temperatures \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{Temperature Dependence of the Open-Circuit Voltage: The Entropic Coefficient}
+
+The reversible heat term $-T\,\partial V_{oc}/\partial T$ appearing in Equation~\eqref{eq:bernardi_lumped} deserves separate comment, since the entropic coefficient $\partial V_{oc}/\partial T$ (equivalently $dU_{oc}/dT$) is itself a parameter that must be measured or estimated, and because it is a signed quantity: depending on SOC and electrode chemistry, reversible heat generation can either add to or subtract from the irreversible (resistive) heat generation term, so that a cell can, in certain SOC windows, cool slightly under load before net self-heating dominates at high current. The entropic coefficient is conventionally obtained not from the pulse tests used for ECM parameter identification (Section~\ref{ssec:thevenin}), but from a dedicated potentiometric test in which the cell is held at open circuit at a fixed SOC while ambient temperature is varied in small steps and the equilibrium OCV is recorded at each temperature, yielding $\partial V_{oc}/\partial T$ as the local slope of the resulting OCV-versus-temperature curve at that SOC. Because this test must be repeated across the SOC range of interest to build a complete $\partial V_{oc}/\partial T(z)$ characteristic, and because it requires long equilibration times at open circuit to avoid contaminating the reversible-heat signal with residual polarization, it is one of the more time-consuming characterization procedures referenced in this report, and is noted here as a companion to, but methodologically distinct from, the OCV-SOC and HPPC procedures of Chapter~3.
+
+\subsection{Implications for Parameter Estimation}
+
+Thermal coupling has two direct consequences for the estimation methods developed later in this report. First, it explains \emph{why} ECM and electrochemical-model parameters are not constants but must be re-identified, interpolated, or tracked online as functions of temperature (and SOC, and SOH) -- a requirement that motivates the online/adaptive estimation methods of Chapters~5 through~7, as opposed to a single offline identification performed once at a nominal temperature. Second, it introduces the possibility of \emph{using} temperature measurements, where available, as an additional observation channel that can improve the observability and conditioning of joint state-parameter estimation problems, a possibility that will be revisited in the co-estimation framework of Chapter~7 (Section~7.4, computational constraints in microcontrollers) once the state-space structures of Chapter~5 have been introduced. Thermal models are therefore treated in this report primarily as a source of parameter dependence and as a diagnostic and safety layer, rather than as a stand-alone model family competing with ECM or P2D/SPM structures.
+
+\section{Summary}
+\label{sec:summary_ch2}
+
+This chapter established the three principal model families used throughout the remainder of this report. Equivalent circuit models (Section~\ref{sec:ecm}) represent the cell as a network of resistors, capacitors, and a controlled voltage source; the Rint, Thevenin, and dual-polarization topologies were developed in order of increasing structural complexity, and their trade-offs in transient fidelity, parameter count, and identifiability were compared directly in Table~\ref{tab:ecm_comparison}. Electrochemical physics-based models (Section~\ref{sec:electrochemical}) were introduced through the P2D (Doyle--Fuller--Newman) formulation and its reduced-order single particle model counterpart, with governing equations for solid-phase diffusion, electrolyte transport, charge conservation, and Butler--Volmer kinetics presented explicitly, and their structural and computational differences summarized in Table~\ref{tab:p2d_vs_spm}. Thermal-coupled extensions (Section~\ref{sec:thermal}) were shown to be a necessary augmentation of either model family whenever self-heating or temperature-dependent parameter variation cannot be neglected, built on the Bernardi--Pawlikowski--Newman energy balance and its distributed, thermal-electrochemically coupled extensions.
+
+Table~\ref{tab:chapter2_master_comparison} consolidates the model-selection guidance previewed in Section~\ref{ssec:model_selection_preview} into a single reference table, drawing together the computational-cost, interpretability, and identification-data observations made throughout the chapter.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Consolidated comparison of model families developed in Chapter~2.}
+	\label{tab:chapter2_master_comparison}
+	\begin{tabular}{p{2.6cm}p{2.6cm}p{2.6cm}p{2.6cm}p{2.6cm}}
+		\toprule
+		Criterion & Rint & Thevenin (1RC) & Dual-polarization (2RC) & P2D / SPM \\
+		\midrule
+		Real-time feasibility & Excellent & Excellent & Good & Poor (P2D) / Fair (SPM) \\
+		Transient accuracy & Poor & Moderate & Good & Excellent (P2D) \\
+		Parameter interpretability & Circuit-level & Circuit-level & Circuit-level & Physical/material \\
+		Offline identification effort & Minimal & Low & Moderate & High (P2D) / Moderate (SPM) \\
+		Suitability for online tracking (Ch.~5--7) & High & High & Moderate & Low (P2D) / Moderate (SPM) \\
+		Role in aging/degradation studies (Ch.~7) & Limited & Limited & Moderate & Primary tool \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+A recurring theme, to be developed formally in Chapter~4 and revisited in Chapters~7 and~9, is that increasing model fidelity (moving from Rint to dual-polarization ECMs, or from SPM to full P2D) does not come free: richer models introduce parameters that are progressively harder to identify uniquely from terminal voltage/current measurements, both because of increased parameter count and because of weaker sensitivity of the measured output to individual parameters. This tension between model fidelity and parameter identifiability is the central organizing concern of the report from this point forward.
+
+It is worth restating, in closing, how the three chapter sections relate to the twelve-chapter structure of the report as a whole (Chapter~1, Section~1.4). The ECM structures of Section~\ref{sec:ecm} -- principally the Thevenin and dual-polarization topologies -- are the models onto which essentially all of the offline (Chapter~4), online adaptive-filtering (Chapter~5), and observer-based (Chapter~6) estimation methods are applied, and they reappear as the plant model simulated in Simulink in Chapter~10 and validated in software-in-the-loop form in Chapter~11. The P2D and SPM structures of Section~\ref{sec:electrochemical} serve a different role: they provide the physically grounded reference against which reduced-order and data-driven models are checked, and they underpin the aging-aware co-estimation discussion of Chapter~7 and, indirectly, the physics-informed neural network methods of Chapter~8. The thermal-coupling material of Section~\ref{sec:thermal} cuts across both families, establishing why every parameter introduced in this chapter must ultimately be understood as a function of temperature (and SOC, and SOH) rather than as a fixed constant -- a dependency that the experimental characterization procedures of Chapter~3 are specifically designed to expose and quantify.
+
+\subsection{Consolidated Reference: Governing Equations by Model Family}
+
+For ease of reference in later chapters, Table~\ref{tab:governing_eq_reference} lists the core governing equation(s) associated with each model family developed in this chapter, together with the equation number where each is first derived.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Reference index of core governing equations by model family.}
+	\label{tab:governing_eq_reference}
+	\begin{tabular}{p{3.6cm}p{6.0cm}p{2.6cm}}
+		\toprule
+		Model family & Core relation(s) & Equation \\
+		\midrule
+		Rint & Algebraic terminal voltage & \eqref{eq:rint} \\
+		Thevenin (1RC) & Terminal voltage + single RC ODE & \eqref{eq:thevenin_terminal}, \eqref{eq:thevenin_rc} \\
+		Dual-polarization (2RC) & Terminal voltage + two RC ODEs & \eqref{eq:dp_terminal}, \eqref{eq:dp_rc} \\
+		P2D / DFN & Coupled solid diffusion, electrolyte transport, charge conservation, Butler--Volmer kinetics & \eqref{eq:p2d_solid_diffusion}--\eqref{eq:p2d_bv} \\
+		SPM & Reduced solid diffusion + algebraic terminal voltage & \eqref{eq:spm_diffusion}--\eqref{eq:spm_terminal} \\
+		Thermal (lumped) & Lumped energy balance & \eqref{eq:lumped_thermal} \\
+		Thermal (distributed) & Distributed energy balance (PDE) & \eqref{eq:thermal_pde} \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+Chapter~3 turns to the experimental side of this same problem: the laboratory characterization procedures -- OCV-SOC testing, hybrid pulse power characterization (HPPC), and electrochemical impedance spectroscopy (EIS) -- that generate the measured data from which the parameters of the models developed in this chapter are subsequently identified, using the offline and online methods presented in Chapters~4 through~9.
+
+
