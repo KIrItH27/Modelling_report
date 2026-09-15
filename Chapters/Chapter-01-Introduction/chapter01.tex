@@ -1,67 +1,77 @@
-\chapter{Introduction}
+\chapter{Introduction}  
 \label{chap:introduction}
 
-\section{Overview of Lithium-Ion Battery Technology}
+\section{Overview}
 \label{sec:overview_lib}
 
-Lithium-ion batteries (LIBs) dominate modern energy storage architectures, ranging from portable micro-electronics to utility-scale grid stabilization systems and electric vehicle (EV) powertrains. This ubiquity is driven by their superior specific energy (150--300 Wh/kg), high nominal cell voltage (typically 3.2V to 3.8V depending on cathode chemistry), and low self-discharge rates \cite{armand2008building}. 
+Lithium-ion batteries (LIBs) dominate modern energy storage architectures, ranging from portable micro-electronics to utility-scale grid stabilization systems and electric vehicle (EV) powertrains. This ubiquity is driven by their superior specific energy (150--300 Wh/kg), high nominal cell voltage (3.2--3.8~V depending on cathode chemistry), and low self-discharge rates.
 
 \subsection{Electrochemical Operating Principles}
-The fundamental operation of an LIB relies on the reversible intercalation and de-intercalation of lithium ions between two host structures. A conventional cell consists of a transition metal oxide positive electrode (cathode, e.g., $\mathrm{LiCoO_2}$, $\mathrm{LiFePO_4}$, or $\mathrm{LiNi_{x}Mn_{y}Co_{z}O_2}$), a carbonaceous negative electrode (anode, typically graphite $\mathrm{C_6}$), a micro-porous polymer separator, and a non-aqueous electrolyte comprising lithium salts (e.g., $\mathrm{LiPF_6}$) dissolved in organic carbonates. 
 
-During the charging phase, an external power source forces electrons through the external circuit from the cathode to the anode. Simultaneously, lithium ions are extracted from the cathode lattice, transport through the electrolyte and separator, and intercalate into the graphitic planes of the anode. The half-cell and overall reversible electrochemical reactions for a standard $\mathrm{LiCoO_2}$ (LCO) cell are expressed as:
+The fundamental operation of an LIB relies on the reversible intercalation and de-intercalation of lithium ions between two host structures. A conventional cell consists of a transition metal oxide cathode (e.g., $\mathrm{LiCoO_2}$, $\mathrm{LiFePO_4}$, or $\mathrm{LiNi_xMn_yCo_zO_2}$), a graphitic anode ($\mathrm{C_6}$), a micro-porous separator, and a non-aqueous electrolyte based on $\mathrm{LiPF_6}$ dissolved in organic carbonates.
 
+During charging, an external source drives electrons from the cathode to the anode while lithium ions migrate through the electrolyte and intercalate into the anode. For a standard $\mathrm{LiCoO_2}$ (LCO) cell:
+
+\noindent\textbf{Positive electrode:}
 \begin{equation}
 \label{eq:cathode_rxn}
-\text{Positive Electrode:} \quad \mathrm{LiCoO_2} \rightleftharpoons \mathrm{Li_{1-x}CoO_2} + x\mathrm{Li^+} + x\mathrm{e^-}
+\mathrm{LiCoO_2} \;\rightleftharpoons\; \mathrm{Li_{1-x}CoO_2} + x\mathrm{Li^+} + x\mathrm{e^-}
 \end{equation}
 
+\noindent\textbf{Negative electrode:}
 \begin{equation}
 \label{eq:anode_rxn}
-\text{Negative Electrode:} \quad \mathrm{C_6} + x\mathrm{Li^+} + x\mathrm{e^-} \rightleftharpoons \mathrm{Li_xC_6}
+\mathrm{C_6} + x\mathrm{Li^+} + x\mathrm{e^-} \;\rightleftharpoons\; \mathrm{Li_xC_6}
 \end{equation}
 
+\noindent\textbf{Overall reaction:}
 \begin{equation}
 \label{eq:overall_rxn}
-\text{Overall Reaction:} \quad \mathrm{LiCoO_2} + \mathrm{C_6} \rightleftharpoons \mathrm{Li_{1-x}CoO_2} + \mathrm{Li_xC_6}
+\mathrm{LiCoO_2} + \mathrm{C_6} \;\rightleftharpoons\; \mathrm{Li_{1-x}CoO_2} + \mathrm{Li_xC_6}
 \end{equation}
 
 \subsection{Thermodynamic and Kinetic Foundations}
-The macroscopic electrical behavior of the cell—specifically its terminal voltage and current delivery capability—is governed by underlying thermodynamic and kinetic phenomena. The equilibrium potential of the cell, often referred to as the Open Circuit Voltage (OCV), is a function of the local lithium concentration at the electrode surfaces and the ambient temperature. This relationship is fundamentally described by the Nernst equation:
+
+The terminal voltage of a cell is governed by underlying thermodynamic and kinetic phenomena. The equilibrium potential, or Open Circuit Voltage (OCV), depends on the local lithium concentration at the electrode surfaces and on temperature, as described by the Nernst equation:
 
 \begin{equation}
 \label{eq:nernst}
-E_{eq} = E^0 - \frac{RT}{nF} \ln\left(\frac{a_{red}}{a_{ox}}\right)
+E_{eq} = E^0 - \frac{RT}{nF} \ln\!\left(\frac{a_{red}}{a_{ox}}\right)
 \end{equation}
-where $E^0$ is the standard electrode potential, $R$ is the universal gas constant, $T$ is absolute temperature, $n$ is the number of transferred electrons, $F$ is the Faraday constant, and $a$ represents the chemical activities of the reduced and oxidized species.
 
-When current flows, the terminal voltage deviates from the OCV due to overpotentials ($\eta$). These include ohmic losses ($\eta_{ohm}$), activation polarization driven by charge-transfer kinetics ($\eta_{act}$), and concentration polarization due to mass transport limitations ($\eta_{conc}$). The charge-transfer kinetics at the solid-electrolyte interface are modeled by the Butler-Volmer equation:
+\noindent where $E^0$ is the standard electrode potential, $R$ is the universal gas constant, $T$ is absolute temperature, $n$ is the number of transferred electrons, $F$ is the Faraday constant, and $a_{red}, a_{ox}$ are the activities of the reduced and oxidized species.
+
+When current flows, the terminal voltage deviates from the OCV due to ohmic, activation, and concentration overpotentials. Charge-transfer kinetics at the electrode--electrolyte interface follow the Butler--Volmer equation:
 
 \begin{equation}
 \label{eq:butler_volmer}
-j = j_0 \left[ \exp\left(\frac{\alpha_a n F \eta_{act}}{RT}\right) - \exp\left(-\frac{\alpha_c n F \eta_{act}}{RT}\right) \right]
+j = j_0 \left[ \exp\!\left(\frac{\alpha_a n F \eta_{act}}{RT}\right) - \exp\!\left(-\frac{\alpha_c n F \eta_{act}}{RT}\right) \right]
 \end{equation}
-where $j$ is the current density, $j_0$ is the exchange current density, and $\alpha_a, \alpha_c$ are the anodic and cathodic charge transfer coefficients, respectively \cite{newman1993lithium}.
 
-Because the parameters in Equations \ref{eq:nernst} and \ref{eq:butler_volmer} are highly non-linear, time-variant, and coupled with thermal states, static lookup tables are insufficient for modern control strategies.
+\noindent where $j$ is the current density, $j_0$ is the exchange current density, and $\alpha_a,\alpha_c$ are the anodic and cathodic transfer coefficients \cite{newman1993lithium}.
+
+Because these parameters are non-linear, time-variant, and thermally coupled, static lookup tables are insufficient for modern control strategies.
 
 \section{The Role of the Battery Management System (BMS)}
 \label{sec:bms_role}
 
-A Battery Management System (BMS) is a highly integrated cyber-physical system designed to ensure the safe, efficient, and extended operation of a battery pack. Modern EV battery packs consist of hundreds or thousands of individual cells arranged in series and parallel configurations. Differences in manufacturing tolerances and thermal gradients cause these cells to behave non-uniformly over time, necessitating active management \cite{lu2013review}.
+A Battery Management System (BMS) is a cyber-physical system that ensures the safe, efficient, and extended operation of a battery pack. Modern EV packs contain hundreds or thousands of cells in series and parallel; manufacturing tolerances and thermal gradients cause these cells to behave non-uniformly over time, requiring active management \cite{lu2013review}.
 
 \subsection{BMS Architecture}
-At the hardware layer, an Analog Front-End (AFE) performs high-frequency, multiplexed sampling of individual cell voltages, distributed module temperatures, and total pack current via precision shunts or Hall-effect sensors. These raw telemetry streams are transmitted—typically via an isolated serial peripheral interface (isoSPI) or Controller Area Network (CAN)—to the main Microcontroller Unit (MCU). 
 
-% FIGURE PLACEHOLDER:
-% Create manually using TikZ or draw.io.
-% Suggested content: Multi-layered BMS architecture block diagram. Show the AFE layer measuring V, I, T. Show the data flowing into the MCU layer, splitting into "State Estimation" and "Parameter Identification" blocks. Show outputs controlling contactors, thermal management, and transmitting data via CAN bus.
-% Source/reference: Adapted from Lu et al. (2013) \cite{lu2013review}.
+An Analog Front-End (AFE) performs high-frequency sampling of cell voltages, module temperatures, and pack current. This telemetry is transmitted--typically via isoSPI or CAN--to the main Microcontroller Unit (MCU) for processing.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.7\textwidth]{Gemini_Generated_Image_7dd3xm7dd3xm7dd3.png}
+\caption{Multi-layered, adaptive BMS architecture.}
+\label{fig:bms_architecture}
+\end{figure}
 
 \subsection{Distinguishing State and Parameter Estimation}
-Within the MCU's application layer, algorithmic software modules process the incoming data. It is imperative to mathematically decouple the concepts of state estimation and parameter estimation, as they operate on fundamentally different time scales and serve different control objectives \cite{plett2004extended}.
 
-Consider a generalized discrete-time nonlinear state-space representation of a battery:
+The MCU's algorithmic layer must mathematically decouple state estimation from parameter estimation, as the two operate on different time scales and serve different objectives \cite{plett2004extended}. Consider a discrete-time nonlinear state-space model:
+
 \begin{equation}
 \label{eq:state_space_bms}
 \begin{aligned}
@@ -69,154 +79,114 @@ x_{k+1} &= f(x_k, u_k, \theta_k) + w_k \\
 y_k &= h(x_k, u_k, \theta_k) + v_k
 \end{aligned}
 \end{equation}
-where:
-\begin{itemize}
-    \item $u_k$ is the deterministic input vector at time step $k$ (e.g., applied current $I_k$, ambient temperature $T_{amb}$).
-    \item $y_k$ is the measured output vector (e.g., terminal voltage $V_t$).
-    \item $w_k, v_k$ represent unmodeled process and measurement noise, respectively, often assumed to be zero-mean Gaussian.
-\end{itemize}
 
-\textbf{State Estimation ($x_k$):} 
-The state vector $x_k$ contains variables that dynamically evolve during operation and capture the instantaneous internal condition of the battery. The most common states are the State of Charge (SOC) and internal polarization voltages (in equivalent circuit models) or internal lithium concentrations (in electrochemical models). These variables change rapidly (on the order of seconds or minutes) in direct response to the input $u_k$.
+\noindent where $u_k$ is the input vector (e.g., current $I_k$, ambient temperature $T_{amb}$), $y_k$ is the measured output (e.g., terminal voltage $V_t$), and $w_k, v_k$ are zero-mean process and measurement noise.
 
-\textbf{Parameter Estimation ($\theta_k$):}
-The parameter vector $\theta_k$ contains the physical or empirical coefficients defining the functions $f(\cdot)$ and $h(\cdot)$. These include the total cell capacity ($Q$), internal ohmic resistance ($R_0$), and polarization time constants ($\tau$). Unlike states, parameters represent the underlying structure of the cell. They change slowly over months or years due to degradation, or shift non-linearly when the battery transitions between different temperature or SOC regimes. 
+\textbf{State estimation ($x_k$):} contains variables that evolve rapidly, such as State of Charge (SOC) and internal polarization voltages, changing over seconds to minutes in response to $u_k$.
 
-The core thesis of this report is that accurate state estimation ($x_k$) is mathematically impossible if the parameter vector ($\theta_k$) is obsolete. Advanced BMS architectures require continuous or periodic \textit{online parameter identification} to track the evolving $\theta_k$ matrix, ensuring the state-space model remains a high-fidelity representation of the physical plant.
+\textbf{Parameter estimation ($\theta_k$):} contains coefficients defining $f(\cdot)$ and $h(\cdot)$, such as capacity $Q$, ohmic resistance $R_0$, and polarization time constants $\tau$. These evolve slowly, over months or years, due to degradation.
+
+The central thesis of this report is that accurate state estimation is not possible if the parameter vector $\theta_k$ is outdated. Advanced BMS architectures therefore require continuous \emph{online parameter identification} to keep the state-space model consistent with the physical plant.
 
 \section{The Need for Parameter Estimation}
 \label{sec:need_parameter_estimation}
 
-Lithium-ion cells are not static components; they are volatile electrochemical reactors whose internal characteristics shift continuously. If a BMS relies solely on parameters calibrated at the Beginning-of-Life (BOL) in a laboratory setting, the predictive accuracy of the algorithms will diverge significantly from the physical reality of the cell as it ages.
+Lithium-ion cells are volatile electrochemical systems whose internal characteristics shift continuously. Relying solely on parameters calibrated at Beginning-of-Life (BOL) causes predictive accuracy to diverge from physical reality as the cell ages.
 
 \subsection{The Challenge of Time-Variant Dynamics}
-The parameter vector $\theta$ of a lithium-ion cell is highly multi-dimensional. For example, the purely ohmic internal resistance $R_0$ is a complex surface:
+
+The internal resistance $R_0$, for example, is a function of several operating conditions:
 \begin{equation}
-R_0 = f(\text{SOC}, \text{Temperature}, \text{Current Direction}, \text{SOH})
+R_0 = f(\text{SOC}, T, \text{current direction}, \text{SOH})
 \end{equation}
 
-When a vehicle accelerates, pulling a transient high-current pulse, the internal resistance drops momentarily due to self-heating. Conversely, at low temperatures and low SOC, diffusion limitations cause a severe spike in apparent impedance. If the BMS uses a fixed $R_0$, it will inaccurately calculate the expected voltage drop ($V = I \cdot R_0$), leading to false over-voltage or under-voltage alarms, triggering unnecessary safety disconnects \cite{hu2012comparative}. 
+During a high-current pulse, $R_0$ drops momentarily due to self-heating; at low temperature and low SOC, diffusion limitations sharply increase apparent impedance. A fixed $R_0$ therefore produces inaccurate voltage-drop estimates ($V = I R_0$), leading to false over-/under-voltage alarms and unnecessary safety disconnects \cite{hu2012comparative}.
 
-Furthermore, parameter identifiability is not guaranteed under all operating conditions. Identifiability requires that the input signal (current) contains sufficient frequency richness to excite all the dynamic modes of the battery. During steady-state constant-current charging, polarization parameters become weakly observable, complicating the estimation process.
+Parameter identifiability is also condition-dependent: the current profile must be sufficiently rich in frequency content to excite all dynamic modes. Under steady constant-current charging, polarization parameters become weakly observable, complicating estimation.
 
 \subsection{Safety, Aging, and Reliability}
 \label{subsec:safety_aging}
 
-The most critical justification for real-time parameter estimation lies in functional safety and the diagnosis of physical degradation mechanisms. Battery aging is generally categorized into cycle aging (induced by mechanical stress during charge/discharge) and calendar aging (induced by thermodynamic instability over time, even at rest).
+Real-time parameter estimation is essential for functional safety and degradation diagnosis. Battery aging is broadly categorized as cycle aging (mechanical stress during charge/discharge) and calendar aging (thermodynamic instability over time, even at rest).
 
 \subsubsection{Solid Electrolyte Interphase (SEI) Growth}
-The primary degradation mechanism in graphitic anodes is the continuous thickening of the Solid Electrolyte Interphase (SEI) layer. The SEI forms during the initial formation cycles as the electrolyte solvent reduces at the anode surface, creating a passivating layer. While necessary to prevent further solvent decomposition, this layer slowly grows over the life of the cell, consuming cyclable lithium inventory (LLI) and increasing the internal resistance \cite{vetter2005aging}.
 
-The growth of the SEI layer thickness ($\delta_{SEI}$) is often modeled as a diffusion-limited process:
+The dominant degradation mechanism in graphitic anodes is the continuous thickening of the Solid Electrolyte Interphase (SEI) layer, formed during initial cycling as electrolyte solvent reduces at the anode surface. While the layer passivates the anode, it also consumes cyclable lithium and increases resistance \cite{vetter2005aging}. Its growth is often modeled as diffusion-limited:
+
 \begin{equation}
 \label{eq:sei_growth}
-\frac{d\delta_{SEI}}{dt} = \frac{M_{SEI}}{\rho_{SEI} F} j_{s}
+\frac{d\delta_{SEI}}{dt} = \frac{M_{SEI}}{\rho_{SEI} F}\, j_s
 \end{equation}
-where $M_{SEI}$ and $\rho_{SEI}$ are the molecular weight and density of the SEI products, and $j_s$ is the parasitic side-reaction current density.
 
-From a macroscopic perspective, this micro-structural degradation manifests purely as a shift in the parameter vector: total capacity $Q$ decreases, and ohmic resistance $R_0$ increases. Parameter estimation algorithms track these macroscopic shifts, providing an indirect but highly accurate measurement of internal degradation.
+\noindent where $M_{SEI}$, $\rho_{SEI}$ are the molecular weight and density of the SEI products, and $j_s$ is the parasitic side-reaction current density. Macroscopically, this manifests as a shift in the parameter vector: capacity $Q$ decreases and resistance $R_0$ increases -- an indirect but accurate signature of internal degradation.
 
 \subsubsection{Thermal Modeling and Runaway Prevention}
-Accurate parameter estimation is the foundation of thermal safety. The heat generation rate ($\dot{q}$) inside a cell is defined by the Bernardi equation:
 
+Heat generation inside a cell follows the Bernardi equation:
 \begin{equation}
 \label{eq:bernardi}
-\dot{q} = I^2 R_{internal} + I \cdot T_{cell} \frac{\partial U}{\partial T}
+\dot{q} = I^2 R_{internal} + I\, T_{cell}\, \frac{\partial U}{\partial T}
 \end{equation}
-where $I^2 R_{internal}$ represents irreversible Joule heating, and the second term represents reversible entropic heating (where $U$ is the OCV). 
 
-If the BMS utilizes an outdated $R_{internal}$ value, it will systematically miscalculate the generated heat. The lumped-capacitance thermal model of a cell is given by:
+\noindent where the first term is irreversible Joule heating and the second is reversible entropic heating ($U$ is the OCV). The lumped-capacitance thermal model of a cell is:
 \begin{equation}
 \label{eq:thermal_mass}
-m c_p \frac{dT_{cell}}{dt} = \dot{q} - h A (T_{cell} - T_{amb})
+m c_p \frac{dT_{cell}}{dt} = \dot{q} - hA\,(T_{cell} - T_{amb})
 \end{equation}
-where $m$ is mass, $c_p$ is specific heat capacity, $h$ is the convective heat transfer coefficient, and $A$ is the surface area.
 
-Underestimating $R_{internal}$ leads to an underestimation of $dT_{cell}/dt$. This is catastrophic because exothermic decomposition reactions (such as SEI breakdown at $\approx 90^\circ$C, separator melting at $\approx 130^\circ$C, and cathode oxygen release) exhibit exponential Arrhenius kinetics. Early detection of rising internal resistance via recursive parameter estimation allows the BMS to derate the power limits before critical thermal thresholds are breached.
+\noindent where $m$ is mass, $c_p$ is specific heat capacity, $h$ is the convective heat transfer coefficient, and $A$ is surface area. An outdated $R_{internal}$ causes the BMS to underestimate $dT_{cell}/dt$ -- a serious risk, since exothermic decomposition (SEI breakdown near $90^\circ$C, separator melting near $130^\circ$C, cathode oxygen release) follows Arrhenius kinetics. Early detection of rising resistance via recursive parameter estimation allows power derating before critical thermal thresholds are reached.
 
 \subsubsection{State of Health (SOH) Tracking}
-Parameter identification directly outputs the metrics required for SOH calculation. SOH is a multi-faceted metric, typically divided into capacity SOH ($\text{SOH}_Q$) and power SOH ($\text{SOH}_R$):
+
+Parameter identification directly yields the metrics needed for SOH calculation, split into capacity SOH and power SOH:
 
 \begin{equation}
 \label{eq:sohq}
 \text{SOH}_Q = \frac{\hat{Q}_{current}}{Q_{nominal}} \times 100\%
 \end{equation}
+
 \begin{equation}
 \label{eq:sohr}
 \text{SOH}_R = \frac{R_{EOL} - \hat{R}_{current}}{R_{EOL} - R_{BOL}} \times 100\%
 \end{equation}
 
-Here, $\hat{Q}_{current}$ and $\hat{R}_{current}$ are the outputs of the online parameter estimation algorithms (e.g., Recursive Least Squares or Dual Extended Kalman Filters). Tracking these parameters prevents the operator from being stranded due to unexpected capacity drop-offs and signals when the battery must be retired for second-life applications.
+\noindent Here $\hat{Q}_{current}$ and $\hat{R}_{current}$ are outputs of online estimation algorithms (e.g., Recursive Least Squares or Dual Extended Kalman Filters). Tracking these values prevents unexpected capacity drop-offs and signals when a battery must be retired for second-life use.
 
 \subsection{Performance Optimization}
 \label{subsec:performance_opt}
 
-While safety is the primary mandate, commercial viability demands that the BMS extracts the maximum possible performance from the battery pack. This requires operating the cells as close to their electrochemical boundaries as possible without exceeding them. 
+Beyond safety, commercial viability requires extracting maximum performance from the pack, which means operating cells close to their electrochemical limits without exceeding them.
 
 \subsubsection{Dynamic State of Power (SOP) Estimation}
-The State of Power (SOP) defines the maximum continuous current (or power) a battery can accept or deliver over a specific prediction horizon (e.g., $\Delta t = 10$ seconds) without violating voltage limits, SOC limits, or design current limits.
 
-In primitive BMS designs with static parameters, peak discharge current ($I_{max}^{dis}$) is calculated using simple algebraic constraints:
+State of Power (SOP) defines the maximum current or power a battery can sustain over a prediction horizon $\Delta t$ (e.g., 10~s) without violating voltage or SOC limits. Static designs compute peak discharge current with a simple algebraic constraint:
+
 \begin{equation}
 \label{eq:sop_static}
-I_{max}^{dis} = \frac{\text{OCV}(SOC) - V_{min\_limit}}{R_{static}}
+I_{max}^{dis} = \frac{\text{OCV}(SOC) - V_{min}}{R_{static}}
 \end{equation}
 
-Because $R_{static}$ must account for worst-case aging and temperature scenarios, this approach severely artificially limits the power output. The vehicle's acceleration is throttled, and regenerative braking energy is wasted, not because the physical chemistry cannot handle it, but because the software model is blind to the cell's true, real-time capability.
+Because $R_{static}$ must cover worst-case aging and temperature conditions, this approach unnecessarily limits power output, throttling acceleration and wasting regenerative braking energy.
 
-By implementing advanced parameter estimation, the BMS tracks the high-fidelity transient impedance parameters (such as the polarization resistances $R_{p1}, R_{p2}$ and capacitances $C_{p1}, C_{p2}$ in a multi-order equivalent circuit). This allows for dynamic SOP formulation. The predicted voltage $V(t+\Delta t)$ under a constant hypothetical current pulse $I$ is calculated as:
+With online parameter estimation, the BMS instead tracks the transient impedance parameters (polarization resistances $R_{p1}, R_{p2}$ and capacitances $C_{p1}, C_{p2}$) and predicts the voltage response to a hypothetical current pulse $I$:
 
-\begin{equation}
+\begin{align}
 \label{eq:sop_dynamic}
-V(t+\Delta t) = \text{OCV}(SOC(t+\Delta t)) - I R_0 - I R_{p1} \left(1 - e^{-\frac{\Delta t}{R_{p1}C_{p1}}}\right)
-\end{equation}
+V(t+\Delta t) \;=\; &\;\text{OCV}\big(SOC(t+\Delta t)\big) \;-\; I R_0 \notag \\
+&-\; I R_{p1}\left(1 - e^{-\Delta t / (R_{p1}C_{p1})}\right)
+\end{align}
 
-Setting $V(t+\Delta t)$ to the absolute minimum safe voltage threshold $V_{min}$ allows the BMS software to solve backwards for the true maximum current $I_{max}^{dis}$ the cell can currently sustain \cite{sun2015state}. 
+Setting $V(t+\Delta t)$ to the minimum safe voltage $V_{min}$ allows the BMS to solve for the true maximum sustainable current $I_{max}^{dis}$ \cite{sun2015state}.
 
 \subsubsection{Fast Charging Strategies}
-Fast charging protocols (such as those used in modern 800V EV architectures) rely entirely on dynamic parameter awareness. Charging at high C-rates risks lithium plating—a phenomenon where lithium ions deposit as solid metal on the surface of the anode rather than intercalating into the graphite lattice. Plating is highly dependent on the diffusion time constants of the cell, which vary drastically with temperature and SOC.
 
-By co-estimating the internal diffusion parameters alongside SOC, Model Predictive Control (MPC) algorithms can shape the charging current profile. The system can inject massive currents when the estimated diffusion pathways are clear, and precisely throttle the current just before anodic overpotentials cross the threshold for lithium plating. This shifts the charging paradigm from slow, conservative, step-wise constant-current (CC) profiles to dynamic, optimal-time control boundaries.
+Fast charging in modern 800V EV architectures depends on dynamic parameter awareness. High C-rate charging risks lithium plating -- lithium depositing as solid metal rather than intercalating -- a phenomenon governed by diffusion time constants that vary with temperature and SOC. By co-estimating diffusion parameters alongside SOC, Model Predictive Control (MPC) can shape the charging current: injecting high current when diffusion pathways are clear, and throttling before anodic overpotential crosses the plating threshold. This shifts fast charging from conservative, step-wise constant-current profiles toward dynamic, optimal-time control.
 
-\section{Routemap to the Report}
-\label{sec:routemap}
 
-The objective of this report is to systematically analyze the methodologies used to estimate the parameters discussed in the preceding sections. The progression of chapters is designed to move from foundational theory through classic engineering solutions, culminating in state-of-the-art AI-driven methodologies and practical implementation.
-
-\textbf{Chapter 2: Battery Modeling Fundamentals} constructs the mathematical abstractions required for algorithmic processing. It compares empirical Equivalent Circuit Models (ECMs) against electrochemical Physics-Based Models (e.g., P2D and SPM), establishing the specific parameters that must be identified in each framework.
-
-\textbf{Chapter 3: Experimental Characterization and Data Acquisition} bridges the physical and computational domains. It outlines the laboratory procedures—specifically Hybrid Pulse Power Characterization (HPPC) and Electrochemical Impedance Spectroscopy (EIS)—required to generate ground-truth data for algorithmic validation.
-
-\textbf{Chapter 4: Offline Parameter Identification Methods} explores regression techniques for post-processing experimental data. It details the mathematical formulations of Ordinary Least Squares (OLS) alongside heuristic optimization algorithms such as Genetic Algorithms (GA) and Particle Swarm Optimization (PSO) used to locate global minima in non-convex parameter spaces.
-
-\textbf{Chapter 5: Online Parameter Estimation: Adaptive Filtering} transitions into real-time algorithms suitable for BMS microcontroller execution. It presents the derivations for Recursive Least Squares (RLS) with forgetting factors, and details probabilistic Kalman Filter frameworks (EKF and UKF) utilized for dynamic tracking in noisy environments.
-
-\textbf{Chapter 6: Observer-Based Parameter Estimation} analyzes deterministic alternatives to stochastic filtering, focusing on Proportional-Integral (PI) and Sliding Mode Observers (SMO), emphasizing Lyapunov stability and mathematical proof of convergence bounds.
-
-\textbf{Chapter 7: Co-Estimation of States and Parameters} addresses the most significant mathematical challenge in battery management: the simultaneous tracking of interdependent variables. It details Dual-EKF and joint extended state vector formulations, balancing estimation accuracy against matrix inversion computational costs.
-
-\textbf{Chapter 8: Artificial Intelligence and Data-Driven Estimation} shifts away from pure physical modeling. It evaluates how Support Vector Regression (SVR), Long Short-Term Memory (LSTM) networks, and Physics-Informed Neural Networks (PINNs) can extract parameter health directly from vast temporal datasets without relying on explicit analytical Jacobians.
-
-\textbf{Chapter 9: Advanced Stochastic Gradient Algorithms} introduces Multi-Innovation Stochastic Gradient (MISG) methods designed to extract parameters reliably in environments with severe sensor noise and data dropout, providing robust alternatives to standard least-squares.
-
-\textbf{Chapter 10: Physical Plant Modeling in Simulink} and \textbf{Chapter 11: Smart-BMS Software-in-the-Loop Validation} focus on practical engineering deployment. These chapters detail how algorithms are verified against synthesized dynamic drive cycles and transient load scenarios before physical hardware compilation.
-
-\textbf{Chapter 12: Conclusion and Future Perspectives} synthesizes the findings, contrasting the computational load, accuracy, and deployment feasibility of the reviewed methodologies, and highlights the ongoing evolution toward cloud-connected digital twin parameter estimation.
-
-\section{Bibliography}
-\label{sec:bibliography_note}
-
-A central requirement of technical reporting is the rigorous attribution of data, algorithmic structures, and historical context. In accordance with standard academic engineering practices, this report utilizes the IEEE citation format. 
-
-Literature sources including peer-reviewed journal articles, international conference proceedings (e.g., IEEE, Elsevier, Springer), and foundational textbook methodologies are cited via numerical bracket notation within the text \cite{armand2008building}, \cite{newman1993lithium}. 
-
-A comprehensive, alphabetically or sequentially ordered bibliography is compiled at the conclusion of the report, utilizing BibTeX metadata to ensure accurate cross-referencing of DOI numbers, volume records, and author attributions. For the purposes of this specific document compilation, localized BibTeX references supporting the assertions of each chapter are provided independently to facilitate modular review and verification of specific parameter estimation claims.
 
 \section{Summary}
 \label{sec:summary_ch1}
 
-This introductory chapter established the foundational pretext for the technical investigation of parameter estimation in lithium-ion battery management systems. By analyzing the fundamental electrochemical mechanisms—specifically intercalation kinetics and the Nernstian thermodynamic response—it was demonstrated that a battery's terminal behavior is inherently non-linear and subject to extreme variability over its lifecycle.
+This chapter established the motivation for studying parameter estimation in lithium-ion BMS. The electrochemical fundamentals -- intercalation kinetics and the Nernstian voltage response -- show that terminal behavior is inherently non-linear and variable over the battery lifecycle.
 
-The architecture of a modern Battery Management System (BMS) was defined, and a strict mathematical separation was imposed between rapidly fluctuating operational states (such as SOC) and the underlying, slowly varying model parameters (such as internal resistance and total capacity). 
-
-Through the analysis of safety dynamics—including Arrhenius thermal runway dependencies and the diffusion-limited growth of the solid electrolyte interphase (SEI) layer—it was established that static parameter models pose significant safety risks and result in highly conservative operational bounds. Dynamic parameter estimation is, therefore, a mandatory requirement for calculating accurate State of Health (SOH) and maximizing the dynamic State of Power (SOP) boundaries during aggressive operational transients. The subsequent chapters will systematically formulate, compare, and validate the specific algorithms capable of achieving these real-time estimation requirements.
+The BMS architecture was defined, with a clear mathematical separation between rapidly changing states (e.g., SOC) and slowly varying parameters (e.g., resistance, capacity). Analysis of thermal runaway dynamics and SEI growth showed that static parameter models pose safety risks and force overly conservative operating limits. Dynamic parameter estimation is therefore essential for accurate SOH tracking and for maximizing SOP during aggressive operation. The following chapters formulate, compare, and validate the algorithms capable of meeting these real-time requirements.

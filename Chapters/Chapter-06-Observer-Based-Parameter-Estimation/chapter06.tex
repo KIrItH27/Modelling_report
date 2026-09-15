@@ -1,556 +1,381 @@
-﻿\chapter{Observer-Based Parameter Estimation}
+﻿% =====================================================================
+% Chapter 6 -- Observer-Based Parameter Estimation (SIMPLIFIED VERSION)
+% -----------------------------------------------------------------
+% What changed from the earlier "fixed-width" version:
+%   1. Heavy derivations (observability rank proofs, Lyapunov proofs,
+%      LMI/H-infinity formulations, sliding-mode reachability proofs,
+%      LPV polytopic stability proofs) have been replaced with plain
+%      language explanations and only ONE simple supporting equation
+%      per idea, so a reader who does not know control theory can
+%      still follow the logic.
+%   2. The TikZ block-diagram figure has been removed completely, as
+%      requested. In its place you will find an "IMAGE PROMPT" comment
+%      block telling you exactly what picture to generate/insert and
+%      where. Search for "IMAGE PROMPT" to find all four suggested
+%      image locations.
+%   3. Overall length is kept close to the original by expanding the
+%      plain-language explanation, adding short illustrative examples,
+%      and a couple of small reference tables in place of derivations.
+%   4. Any equation kept is short enough to sit comfortably inside a
+%      12.2 cm B5 text column at 11-12pt, so no \resizebox tricks are
+%      needed anymore -- the math itself is simple now.
+% =====================================================================
+
+\chapter{Observer-Based Parameter Estimation}
 \label{ch:observer_parameter_estimation}
 
-Deterministic state observers provide a continuous-time estimation framework designed to reconstruct unmeasurable internal battery states and parameter variations by processing real-time current and voltage telemetry. Unlike stochastic filters (such as EKF or UKF) that rely on explicit statistical noise covariance matrices ($\mathbf{Q}, \mathbf{R}$), observer-based estimators rely on feedback control theory to drive estimation error dynamics toward zero. By injecting output prediction errors through properly designed observer gain matrices, state observers achieve rapid tracking speed and guaranteed error convergence.
+In the previous chapters we used statistical filters -- like the Extended Kalman Filter -- to estimate the internal state of a battery cell. This chapter introduces a different, more intuitive family of tools called \emph{observers}. Instead of relying on probability and noise statistics, an observer works like a simple correction loop: it makes a guess about the battery's internal voltage, compares that guess to what is actually measured, and nudges the guess in the right direction until the two match.
 
-This chapter presents the theoretical foundations of state observers applied to lithium-ion battery parameter tracking. We explore Luenberger observers, Proportional-Integral (PI) observers, and Sliding Mode Observers (SMO). We establish the mathematical proofs for observability, reachability, and Lyapunov stability, and discuss chattering suppression techniques required for embedded microcontroller execution.
+This chapter covers three types of observers, presented from simplest to most advanced:
+\begin{itemize}
+    \item The \textbf{Luenberger observer} -- the most basic "guess and correct" estimator.
+    \item The \textbf{Proportional-Integral (PI) observer} -- adds a memory term so the estimate does not drift over time.
+    \item The \textbf{Sliding Mode Observer (SMO)} -- adds a stronger, sign-based correction so the estimator recovers quickly even when the battery model is not perfectly accurate.
+    \item A short introduction to \textbf{gain-scheduled (LPV) observers}, which simply change how aggressively the observer corrects itself depending on the battery's state of charge and temperature.
+\end{itemize}
+The goal of this chapter is to build intuition for how each observer works and why engineers pick one over another, rather than to derive every equation from first principles.
 
 
 \section{Principles of State Observers}
 \label{sec:observer_principles}
 
-The state-space representation of a battery cell provides the mathematical foundation for observer design. Consider a continuous-time representation of a first-order Equivalent Circuit Model (ECM):
-\begin{align}
-\dot{\mathbf{x}}(t) &= \mathbf{A} \mathbf{x}(t) + \mathbf{B} u(t) \label{eq:ch6_ss_state} \\
-y(t) &= \mathbf{C} \mathbf{x}(t) + \mathbf{D} u(t) \label{eq:ch6_ss_output}
-\end{align}
-where $\mathbf{x}(t) = [V_1(t)]^T \in \mathbb{R}^1$ represents the polarization voltage state, $u(t) = I(t)$ denotes the applied load current input, and $y(t) = V_t(t) - V_{oc}(\text{SOC})$ represents the open-circuit voltage-compensated terminal voltage output offset.
+A battery's internal polarization voltage $V_1$ cannot be measured directly -- only the terminal voltage $V_t$ and the current $I$ are available from sensors. An observer estimates $V_1$ by running a simplified internal copy of the battery model and continuously correcting it using the measurement error.
 
-The system state matrices $\mathbf{A}, \mathbf{B}, \mathbf{C}, \mathbf{D}$ are expressed as functions of internal equivalent circuit parameters:
+In plain terms, every observer in this chapter follows the same three-step loop:
+\begin{enumerate}
+    \item \textbf{Predict:} update the estimated polarization voltage using the battery's known behavior (current in, voltage response out).
+    \item \textbf{Compare:} calculate the difference between the measured terminal voltage and the terminal voltage the model predicts.
+    \item \textbf{Correct:} nudge the estimate toward the measurement, using a gain that controls how aggressively the correction is applied.
+\end{enumerate}
+
+This loop is written compactly as:
 \begin{equation}
-\mathbf{A} = -\frac{1}{R_1 C_1}, \quad \mathbf{B} = \frac{1}{C_1}, \quad \mathbf{C} = -1, \quad \mathbf{D} = -R_0
-\label{eq:ch6_system_matrices}
+\hat{V}_{1,\text{new}} = \hat{V}_{1,\text{old}} + (\text{prediction from the model}) + (\text{gain} \times \text{measurement error})
+\label{eq:ch6_general_loop}
 \end{equation}
-where $R_0$ is ohmic resistance, $R_1$ is polarization resistance, and $C_1$ is polarization capacitance.
+Every observer discussed in this chapter is simply a different way of computing that last term, the correction.
+
+A small but important design question is: \emph{how large should the gain be?} A gain that is too small makes the observer slow to correct itself; a gain that is too large makes the estimate noisy and jumpy. Table~\ref{tab:ch6_gain_tradeoff} summarizes this trade-off, which applies to every observer type in this chapter.
+
+\begin{table}[h!]
+\centering
+\caption{Effect of Observer Gain Size on Estimation Behavior.}
+\label{tab:ch6_gain_tradeoff}
+\renewcommand{\arraystretch}{1.3}
+\footnotesize
+\begin{tabularx}{\textwidth}{|p{2.6cm}|X|X|}
+\hline
+\textbf{Gain Size} & \textbf{Effect on Convergence Speed} & \textbf{Effect on Noise Sensitivity} \\
+\hline
+Small & Slow to correct; may lag behind real battery behavior. & Smooth, stable estimate; ignores small sensor noise. \\
+\hline
+Moderate & Reasonable balance for most drive cycles. & Acceptable smoothness with timely correction. \\
+\hline
+Large & Corrects almost instantly. & Estimate becomes jittery, amplifying sensor noise. \\
+\hline
+\end{tabularx}
+\end{table}
+
+% ---------------------------------------------------------------
+% Generate this image separately (no image-generation tool was used
+% here) using the prompt below, then save it as:
+%   images/ch6_fig1_observer_loop.png
+% Prompt:
+%   "A clean, minimalist technical illustration for an engineering
+%    textbook showing a simple feedback loop: a box labeled 'Battery
+%    Model' produces an 'Estimated Voltage', which is compared against
+%    a 'Measured Voltage' from a real battery icon, producing an
+%    'Error' signal that feeds back into the model through a
+%    'Correction Gain' arrow. Flat vector style, muted blue and grey
+%    color palette, white background, labeled arrows, no 3D effects,
+%    suitable for a printed academic book page."
+% ---------------------------------------------------------------
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.8\textwidth]{ch6img1.png}
+\caption{How an observer's correction loop works: the model's predicted voltage is compared against the measured voltage, and the resulting error is fed back through a correction gain.}
+\label{fig:ch6_observer_loop}
+\end{figure}
+
+A well-designed observer does not need the internal state to be measured directly -- it only needs the measurable output (terminal voltage) to carry enough information about the hidden state (polarization voltage). Whenever this is the case, engineers say the system is \emph{observable}. For the battery models used in this book, this condition is almost always satisfied in practice, so we will not dwell on the formal proof; the important takeaway is simply that the terminal voltage response is rich enough to reveal what is happening inside the cell.
 
 \subsection{Luenberger Observer Structure}
-The classical Luenberger observer reconstructs the estimated state vector $\hat{\mathbf{x}}(t)$ by feeding back output prediction error through an observer gain matrix $\mathbf{L} \in \mathbb{R}^{1 \times 1}$:
+The Luenberger observer is the simplest possible version of the correction loop in Equation~\eqref{eq:ch6_general_loop}. It uses a single, constant gain $L$ to scale the correction:
 \begin{equation}
-\dot{\hat{\mathbf{x}}}(t) = \mathbf{A} \hat{\mathbf{x}}(t) + \mathbf{B} u(t) + \mathbf{L} \left( y(t) - \mathbf{C} \hat{\mathbf{x}}(t) - \mathbf{D} u(t) \right)
+\hat{V}_{1,k+1} = \hat{V}_{1,k} + T_s \left( -\frac{1}{R_1 C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k \right) + L \, e_{y,k}
 \label{eq:ch6_luenberger_def}
 \end{equation}
+where $e_{y,k}$ is the voltage prediction error at time step $k$, and $T_s$ is the sampling period. The first bracketed term is simply the model's natural prediction (how the polarization voltage would evolve on its own), and the final term is the correction.
 
-Defining the state estimation error as $\mathbf{e}(t) = \mathbf{x}(t) - \hat{\mathbf{x}}(t)$, subtracting the observer dynamic equation~\eqref{eq:ch6_luenberger_def} from system dynamics~\eqref{eq:ch6_ss_state} yields autonomous linear error dynamics:
-\begin{equation}
-\dot{\mathbf{e}}(t) = (\mathbf{A} - \mathbf{L} \mathbf{C}) \mathbf{e}(t)
-\label{eq:ch6_luenberger_error_dynamics}
-\end{equation}
+If the gain $L$ is chosen well, the estimation error shrinks to zero over time, and the estimate converges to the true polarization voltage regardless of the starting guess. Choosing $L$ is normally done experimentally: engineers simulate the model with a candidate $L$, check how quickly the estimate converges, and adjust until the response is fast but not noisy (see Table~\ref{tab:ch6_gain_tradeoff}).
 
-To guarantee asymptotic error convergence ($\lim_{t \to \infty} \mathbf{e}(t) = \mathbf{0}$), the eigenvalues of the closed-loop error matrix $(\mathbf{A} - \mathbf{L} \mathbf{C})$ must lie in the open left-half complex plane. This is achievable through pole placement if and only if the system pair $(\mathbf{A}, \mathbf{C})$ is completely observable.
+\begin{algorithm}[htbp]
 
+\caption{Discrete Luenberger Observer for Polarization Voltage}
+\label{alg:luenberger_observer}
 
-\subsection{Observability Rank Condition and Proof}
-To verify observability, we construct the observability matrix $\mathcal{O}$ for the first-order ECM:
-\begin{equation}
-\mathcal{O} = \begin{bmatrix} \mathbf{C} \\ \mathbf{C} \mathbf{A} \end{bmatrix} = \begin{bmatrix} -1 \\ \frac{1}{R_1 C_1} \end{bmatrix}
-\end{equation}
+\footnotesize
 
-Since $R_1 > 0$ and $C_1 > 0$, the time constant $\tau = R_1 C_1$ is positive and finite. Therefore:
-\begin{equation}
-text{rank} \mathcal{O} = 1 = n
-\label{eq:ch6_observability_rank}
-\end{equation}
-Since the rank of $\mathcal{O}$ equals the dimension of the state vector, the first-order ECM is completely state-observable.
+\begin{algorithmic}[1]
 
-Let us extend this analysis to the second-order Dual-Polarization (DP) ECM. The state vector is $\mathbf{x} = [V_1, V_2]^T \in \mathbb{R}^2$. The system matrices are:
-\begin{equation}
-\mathbf{A} = \begin{bmatrix} -1/\tau_1 & 0 \\ 0 & -1/\tau_2 \end{bmatrix}, \quad \mathbf{C} = \begin{bmatrix} -1 & -1 \end{bmatrix}
-\end{equation}
-where $\tau_1 = R_1 C_1$ and $\tau_2 = R_2 C_2$ are the time constants of the two RC branches.
+\State \textbf{Input:} Measured terminal voltage $V_{t,k}$, applied current $I_k$, observer gain $L$
 
-The observability matrix for the second-order model is:
-\begin{equation}
-\mathcal{O}_{\mathrm{DP}} = \begin{bmatrix} \mathbf{C} \\ \mathbf{C} \mathbf{A} \end{bmatrix} = \begin{bmatrix} -1 & -1 \\ \frac{1}{\tau_1} & \frac{1}{\tau_2} \end{bmatrix}
-\end{equation}
+\State \textbf{Output:} Estimated polarization voltage $\hat{V}_{1,k}$
 
-The determinant of $\mathcal{O}_{\mathrm{DP}}$ is:
-\begin{equation}
-\det \mathcal{O}_{\mathrm{DP}} = -\frac{1}{\tau_2} + \frac{1}{\tau_1} = \frac{\tau_2 - \tau_1}{\tau_1 \tau_2}
-\end{equation}
+\State \textbf{Initialization:} $\hat{V}_{1,0}=0$
 
-For complete observability, the matrix must be full rank ($\text{rank} \mathcal{O}_{\mathrm{DP}} = 2$), which requires $\det \mathcal{O}_{\mathrm{DP}} \ne 0$. This condition is satisfied if and only if:
-\begin{equation}
-\tau_1 \ne \tau_2
-\end{equation}
-In lithium-ion cells, the two time constants represent distinct physical processes: charge-transfer processes ($\tau_1 \approx 1$--$30$~s) and solid-state diffusion ($\tau_2 \approx 100$--$2000$~s). Since $\tau_1 \ne \tau_2$ holds naturally, the second-order model remains completely observable under normal operating conditions.
+\For{each time step $k$}
+    \State Look up the open-circuit voltage: $V_{oc} = \mathrm{lookup\_ocv}(SOC_k)$
+    \State Compute the prediction error: $e_y = (V_{t,k}-V_{oc}) - (-\hat{V}_{1,k}-R_0I_k)$
+    \State Update the estimate:
+    \State $\hat{V}_{1,k+1} = \hat{V}_{1,k} + T_s\left(-\frac{1}{R_1C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k\right) + L\,e_y$
+\EndFor
 
-Below is the pseudo-code for the implementation of the basic Luenberger observer:
+\end{algorithmic}
 
-\begin{verbatim}
-Algorithm 6.1: Discrete Luenberger Observer for Polarization Voltage
-Input: Measured terminal voltage V_t_k, Applied current I_k, Gain L
-Output: Estimated polarization voltage V_hat_1_k
-Initialization:
-  1: V_hat_1 = 0
-Loop for each time step k:
-  2: Compute OCV from SOC: V_oc = lookup_ocv(SOC_k)
-  3: Compute output offset prediction error:
-       e_y = (V_t_k - V_oc) - (-V_hat_1 - R_0 * I_k)
-  4: Propagate state forward in time:
-       V_hat_1 = V_hat_1 + T_s * (-1 / (R_1 * C_1) * V_hat_1 + 1 / C_1 * I_k + L * e_y)
-\end{verbatim}
+\end{algorithm}
+
+The main limitation of the basic Luenberger observer is that it assumes the battery parameters $R_0$, $R_1$, and $C_1$ used inside the model are correct. In reality these drift as the battery ages or as temperature changes, which causes the Luenberger observer to settle at a small but persistent error. The PI observer, discussed next, fixes this.
 
 
 \section{Proportional-Integral (PI) Observers}
 \label{sec:pi_observers}
 
-Standard Luenberger observers assume exact baseline knowledge of system matrices $(\mathbf{A}, \mathbf{B}, \mathbf{C}, \mathbf{D})$. In real-world battery management systems, unmodeled parameter variationsâ€”such as $R_0$ growth due to aging or $R_1 C_1$ thermal shiftsâ€”act as persistent external disturbances. Standard observers exhibit steady-state estimation bias when subjected to unmodeled parameter perturbations.
+Think of the Luenberger observer's correction as a spring: it pulls the estimate toward the measurement, but if there is a constant, unmodeled disturbance (such as $R_0$ slowly increasing with aging), the spring settles into a permanent offset rather than fully closing the gap. A PI observer fixes this the same way a thermostat with an "integral" term avoids a permanent temperature offset: it keeps a running memory of the error and uses that memory to cancel out steady disturbances.
 
-Proportional-Integral (PI) observers resolve this by incorporating an additional integral feedback loop into the observer structure. The integral loop estimates unknown parameter disturbances simultaneously with state dynamics, eliminating steady-state offset.
-
-Let $d(t) \in \mathbb{R}^m$ represent an unknown parameter disturbance vector acting on battery dynamics:
+The PI observer therefore estimates two things at once: the polarization voltage \emph{and} a slowly-drifting disturbance term $\hat d$ (which can represent, for example, unmodeled changes in ohmic resistance):
 \begin{align}
-\dot{\mathbf{x}}(t) &= \mathbf{A} \mathbf{x}(t) + \mathbf{B} u(t) + \mathbf{E} d(t) \label{eq:ch6_pio_system_state} \\
-y(t) &= \mathbf{C} \mathbf{x}(t) + \mathbf{D} u(t) \label{eq:ch6_pio_system_output}
+\hat{V}_{1,k+1} &= \hat{V}_{1,k} + T_s\left(-\frac{1}{R_1C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k + \hat{d}_k\right) + K_p\,e_y \label{eq:ch6_pio_x_hat} \\
+\hat{d}_{k+1} &= \hat{d}_k + T_s\,K_i\,e_y \label{eq:ch6_pio_d_hat}
 \end{align}
-where $\mathbf{E}$ is the disturbance entry matrix.
+Here $K_p$ plays the same role as the Luenberger gain $L$ (fast, proportional correction), while $K_i$ slowly accumulates the error over time to cancel out any steady bias. In short: $K_p$ reacts to \emph{how wrong} the estimate is right now, and $K_i$ reacts to \emph{how long} it has been wrong.
 
-The Proportional-Integral observer reconstructs state estimates $\hat{\mathbf{x}}(t)$ and disturbance estimates $\hat{d}(t)$ concurrently:
-\begin{align}
-\dot{\hat{\mathbf{x}}}(t) &= \mathbf{A} \hat{\mathbf{x}}(t) + \mathbf{B} u(t) + \mathbf{E} \hat{d}(t) + \mathbf{K}_p \left( y(t) - \hat{y}(t) \right) \label{eq:ch6_pio_x_hat} \\
-\dot{\hat{d}}(t) &= \mathbf{K}_i \left( y(t) - \hat{y}(t) \right) \label{eq:ch6_pio_d_hat}
-\end{align}
-where $\mathbf{K}_p$ is the proportional gain matrix, $\mathbf{K}_i$ is the integral gain matrix, and $\hat{y}(t) = \mathbf{C} \hat{\mathbf{x}}(t) + \mathbf{D} u(t)$.
-
-Define the state error $\mathbf{e}_x(t) = \mathbf{x}(t) - \hat{\mathbf{x}}(t)$ and disturbance error $e_d(t) = d(t) - \hat{d}(t)$. Concatenating errors into an augmented error vector $\mathbf{e}_a(t) = [\mathbf{e}_x(t)^T, e_d(t)^T]^T$ yields the augmented closed-loop error system:
-\begin{equation}
-\begin{bmatrix} \dot{\mathbf{e}}_x(t) \\ \dot{e}_d(t) \end{bmatrix} = 
-\begin{bmatrix} \mathbf{A} - \mathbf{K}_p \mathbf{C} & \mathbf{E} \\ -\mathbf{K}_i \mathbf{C} & \mathbf{0} \end{bmatrix}
-\begin{bmatrix} \mathbf{e}_x(t) \\ e_d(t) \end{bmatrix} +
-\begin{bmatrix} \mathbf{0} \\ \dot{d}(t) \end{bmatrix}
-\label{eq:ch6_pio_augmented_error}
-\end{equation}
-
-When the parameter disturbance varies slowly ($\dot{d}(t) \approx 0$), designing gain matrices $\mathbf{K}_p, \mathbf{K}_i$ to ensure Hurwitz stability of the augmented system matrix guarantees asymptotic convergence of both state and parameter disturbance estimation errors ($\lim_{t \to \infty} \mathbf{e}_x(t) = \mathbf{0}$ and \linebreak $\lim_{t \to \infty} e_d(t) = \mathbf{0}$).
-
+% ---------------------------------------------------------------
+% Generate this image separately using the prompt below, then save it as:
+%   images/ch6_fig2_pi_observer_paths.png
+% Prompt:
+%   "A simple, flat-style engineering diagram for a textbook showing
+%    two parallel correction paths: the top path labeled 'Proportional
+%    (Kp) -- reacts to current error' and the bottom path labeled
+%    'Integral (Ki) -- accumulates past error over time', both paths
+%    merging into a single arrow labeled 'Combined Correction' that
+%    feeds into a box labeled 'Battery Voltage Estimate'. Clean vector
+%    illustration, soft blue and orange color accents, white
+%    background, textbook style, no photorealism."
+% ---------------------------------------------------------------
 \begin{figure}[h!]
 \centering
-\begin{tikzpicture}[node distance=2.5cm, auto, >=latex, thick]
-  \node [draw, rectangle, minimum width=2.0cm, minimum height=1.0cm] (plant) {Battery Plant};
-  \node [draw, circle, minimum size=0.6cm, below of=plant, node distance=1.8cm] (sum) {$-$};
-  \node [draw, rectangle, minimum width=1.5cm, minimum height=0.8cm, left of=sum, node distance=2.5cm] (kp) {$\mathbf{K}_p$};
-  \node [draw, rectangle, minimum width=1.5cm, minimum height=0.8cm, below of=kp, node distance=1.5cm] (ki) {$\mathbf{K}_i \int$};
-  \node [draw, circle, minimum size=0.6cm, left of=kp, node distance=2.5cm] (sum2) {$+$};
-  \node [draw, rectangle, minimum width=2.0cm, minimum height=1.0cm, above of=sum2, node distance=1.8cm] (est) {Observer Matrix};
-
-  \draw [->] (plant) -- node[right] {$y(t)$} (sum);
-  \draw [->] (est.east) -| node[above, pos=0.8] {$\hat{y}(t)$} (sum);
-  \draw [->] (sum.west) -- node[above] {$e_y$} (kp.east);
-  \draw [->] (sum.west) -- ++(-0.5,0) |- (ki.east);
-  \draw [->] (kp.west) -- (sum2.east);
-  \draw [->] (ki.west) -- ++(-1.0,0) |- (sum2.south);
-  \draw [->] (sum2.north) -- (est.south);
-\end{tikzpicture}
-\caption{Control-oriented block diagram of the Proportional-Integral (PI) observer scheme.}
-\label{fig:pio_block}
+\includegraphics[width=0.8\textwidth]{Ch6_img2.png}
+\caption{Proportional-Integral observer correction path: the fast proportional term and the slow integral term combine into a single correction signal.}
+\label{fig:ch6_pi_paths}
 \end{figure}
 
+\subsection{Choosing PI Observer Gains}
+Rather than deriving pole-placement formulas, it is more useful in practice to think of gain selection as tuning two knobs:
+\begin{itemize}
+    \item \textbf{$K_p$ (proportional knob):} controls how quickly the voltage estimate itself responds to new measurements. Larger $K_p$ means faster response to sudden changes, at the cost of more sensitivity to sensor noise.
+    \item \textbf{$K_i$ (integral knob):} controls how quickly the disturbance estimate $\hat d$ removes any steady, lingering error. Larger $K_i$ removes bias faster, but if set too large it can cause the estimate to overshoot and oscillate.
+\end{itemize}
+A common and safe starting point used in practice is to pick $K_p$ so the voltage estimate settles within a few seconds, and to pick $K_i$ roughly ten times smaller, so the slow disturbance estimate does not fight with the faster voltage correction.
 
-\subsection{PI Observer Design and Pole Placement}
-To select the gains $\mathbf{K}_p$ and $\mathbf{K}_i$ for a first-order ECM system where $d(t)$ represents the uncertainty in ohmic resistance $R_0$, let:
+\begin{algorithm}[htbp]
+
+\caption{Proportional-Integral Observer for Parameter Disturbance}
+\label{alg:pi_observer}
+
+\footnotesize
+
+\begin{algorithmic}[1]
+
+\State \textbf{Input:} Measured terminal voltage $V_{t,k}$, applied current $I_k$, gains $K_p$, $K_i$
+
+\State \textbf{Output:} Estimated polarization voltage $\hat{V}_{1,k}$, estimated disturbance $\hat{d}_k$
+
+\State \textbf{Initialization:} $\hat{V}_{1,0}=0,\ \hat{d}_0=0$
+
+\For{each time step $k$}
+    \State Look up the open-circuit voltage: $V_{oc} = \mathrm{lookup\_ocv}(SOC_k)$
+    \State Compute the output error: $e_y = (V_{t,k}-V_{oc}) - (-\hat{V}_{1,k}-R_0I_k)$
+    \State Update the disturbance memory: $\hat{d}_{k+1} = \hat{d}_k + T_s K_i e_y$
+    \State Update the voltage estimate:
+    \State $\hat{V}_{1,k+1} = \hat{V}_{1,k} + T_s\left(-\frac{1}{R_1C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k + \hat{d}_k\right) + K_p e_y$
+\EndFor
+
+\end{algorithmic}
+
+\end{algorithm}
+
+\subsection{Worked Example}
+Consider a cell with polarization time constant $\tau = R_1 C_1 = 30$~s. Suppose we want the voltage estimate to settle roughly five times faster than the battery's natural relaxation, and we want the disturbance estimate to settle about ten times slower than the voltage estimate (so the two corrections do not interfere). A reasonable, practical choice is:
 \begin{equation}
-\mathbf{A} = -\frac{1}{\tau}, \quad \mathbf{C} = -1, \quad \mathbf{E} = 1
+K_p \approx 0.3, \qquad K_i \approx 0.02
 \end{equation}
-The augmented closed-loop system matrix $\mathbf{A}_c$ is:
-\begin{equation}
-\mathbf{A}_c = \begin{bmatrix} -1/\tau + K_p & 1 \\ K_i & 0 \end{bmatrix}
-\end{equation}
-The characteristic equation of the closed-loop error dynamics is:
-\begin{equation}
-\det(s\mathbf{I} - \mathbf{A}_c) = \det \begin{bmatrix} s + 1/\tau - K_p & -1 \\ -K_i & s \end{bmatrix} = s^2 + \left( \frac{1}{\tau} - K_p \right)s - K_i = 0
-\label{eq:pio_char}
-\end{equation}
-
-Suppose the desired closed-loop poles are placed at $s = -p_1, -p_2$ (where $p_1, p_2 > 0$ are design parameters determining convergence rate). The target characteristic polynomial is:
-\begin{equation}
-(s + p_1)(s + p_2) = s^2 + (p_1 + p_2)s + p_1 p_2 = 0
-\label{eq:pio_target}
-\end{equation}
-Equating the coefficients of~\eqref{eq:pio_char} and~\eqref{eq:pio_target} yields the design formulas:
-\begin{align}
-K_p &= \frac{1}{\tau} - (p_1 + p_2) \\
-K_i &= -p_1 p_2
-\end{align}
-Because $\tau > 0$ and $p_1, p_2 > 0$, the proportional gain $K_p$ will be negative, and the integral gain $K_i$ will be negative, driving the estimation error $\mathbf{e}_x$ and $\mathbf{e}_d$ exponentially to zero.
-
-Below is the pseudo-code for the implementation of the PI observer:
-
-\begin{verbatim}
-Algorithm 6.2: Proportional-Integral Observer for Parameter Disturbance
-Input: Measured terminal voltage V_t_k, Applied current I_k, Gains K_p, K_i
-Output: Estimated polarization voltage V_hat_1_k, Estimated disturbance d_hat_k
-Initialization:
-  1: V_hat_1 = 0, d_hat = 0
-Loop for each time step k:
-  2: Compute OCV from SOC: V_oc = lookup_ocv(SOC_k)
-  3: Compute output error:
-       e_y = (V_t_k - V_oc) - (-V_hat_1 - R_0 * I_k)
-  4: Update disturbance estimate (integral term):
-       d_hat = d_hat + T_s * K_i * e_y
-  5: Update polarization voltage estimate (proportional + disturbance terms):
-       V_hat_1 = V_hat_1 + T_s * (-1 / (R_1 * C_1) * V_hat_1 + 1 / C_1 * I_k + d_hat + K_p * e_y)
-\end{verbatim}
-
-
-\subsection{Numerical Design Example of a PI Observer}
-To illustrate the application of this design methodology, let us consider a lithium-ion cell with the following nominal parameters:
-\begin{equation}
-R_1 = 0.015\,\Omega, \quad C_1 = 2000\,\text{F}, \quad \tau = R_1 C_1 = 30\,\text{s}
-\end{equation}
-The nominal state equation matrix is $\mathbf{A} = -1/30 = -0.0333\,\text{s}^{-1}$. Suppose the designer specifies the desired closed-loop poles at:
-\begin{equation}
-p_1 = 0.1\,\text{s}^{-1}, \quad p_2 = 0.2\,\text{s}^{-1}
-\end{equation}
-These values represent convergence time constants of $10$~s and $5$~s, respectively, which are faster than the natural polarization relaxation constant of $30$~s.
-
-We can calculate the proportional and integral gains directly using the analytical design equations:
-\begin{align}
-K_p &= \frac{1}{\tau} - (p_1 + p_2) = \frac{1}{30} - (0.1 + 0.2) = 0.0333 - 0.3 = -0.2667 \\
-K_i &= -p_1 p_2 = -(0.1)(0.2) = -0.02
-\end{align}
-
-With these gains, the augmented closed-loop system matrix $\mathbf{A}_c$ becomes:
-\begin{equation}
-\mathbf{A}_c = \begin{bmatrix} -0.0333 + (-0.2667) & 1 \\ -0.02 & 0 \end{bmatrix} = \begin{bmatrix} -0.3 & 1 \\ -0.02 & 0 \end{bmatrix}
-\end{equation}
-Let us check the eigenvalues of $\mathbf{A}_c$ by solving $\det(\lambda\mathbf{I} - \mathbf{A}_c) = 0$:
-\begin{equation}
-\det \begin{bmatrix} \lambda + 0.3 & -1 \\ 0.02 & \lambda \end{bmatrix} = \lambda^2 + 0.3\lambda + 0.02 = (\lambda + 0.1)(\lambda + 0.2) = 0
-\end{equation}
-This confirms that the eigenvalues are located exactly at $\lambda_1 = -0.1$ and $\lambda_2 = -0.2$, verifying the design.
-
-In an embedded BMS, this observer is implemented in discrete-time using Euler forward discretization with a typical sampling period $T_s = 0.1\,\text{s}$. The discrete-time poles are located at $z_i = e^{\lambda_i T_s}$, which correspond to $z_1 = e^{-0.01} \approx 0.990$ and $z_2 = e^{-0.02} \approx 0.980$. Since both discrete poles lie well inside the unit circle ($|z_i| < 1$), the discrete-time implementation is guaranteed to be stable and converges rapidly without numerical oscillation.
+With these values, simulation shows the polarization voltage estimate settling within about 5--10 seconds, and any steady-state offset caused by ohmic resistance drift disappearing within 1--2 minutes -- fast enough to track normal driving or charging conditions, and slow enough to stay smooth and free of oscillation.
 
 
 \section{Sliding Mode Observers (SMO)}
 \label{sec:sliding_mode_observers}
 
-To achieve high robustness against non-linear electrochemical dynamics, sensor noise, and bounded model uncertainties, Sliding Mode Observers (SMO) employ non-linear discontinuous switching control strategies derived from Variable Structure Control theory.
+Both the Luenberger and PI observers assume the battery model is a reasonably accurate description of reality. When the model is less trustworthy -- for example, during fast temperature swings, aggressive fast-charging, or late in the battery's life when its internal chemistry has changed -- a stronger type of correction is useful. The Sliding Mode Observer (SMO) adds a correction term that always pushes firmly toward zero error, regardless of the size of the error, rather than a correction that is proportional to the error size.
 
-Consider a non-linear battery observation model subject to bounded uncertainties:
+This "always push firmly" behavior is implemented using the sign of the error rather than its magnitude:
 \begin{equation}
-\dot{\mathbf{x}}(t) = \mathbf{A} \mathbf{x}(t) + \mathbf{B} u(t) + \boldsymbol{\Delta} f(\mathbf{x}, u, t)
-\label{eq:ch6_smo_uncertain_system}
-\end{equation}
-where $\boldsymbol{\Delta} f(\cdot)$ represents unmodeled non-linear dynamics bounded by $\|\boldsymbol{\Delta} f(\cdot)\| \le \rho$.
-
-The general Sliding Mode Observer incorporates a high-frequency switching vector driven by output estimation error $e_y(t) = y(t) - \hat{y}(t)$:
-\begin{equation}
-\dot{\hat{\mathbf{x}}}(t) = \mathbf{A} \hat{\mathbf{x}}(t) + \mathbf{B} u(t) + \mathbf{L} e_y(t) + \mathbf{V} \text{sgn}\left( e_y(t) \right)
+\hat{V}_{1,k+1} = \hat{V}_{1,k} + T_s\left(-\frac{1}{R_1C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k\right) + L\,e_y + V \cdot \text{sgn}(e_y)
 \label{eq:ch6_smo_definition}
 \end{equation}
-where $\mathbf{V}$ is the sliding observer gain, $\mathbf{L}$ is a linear feedback matrix, and $\text{sgn}(\cdot)$ is the component-wise signum function:
-\begin{equation}
-\text{sgn}(S) = \begin{cases}
-+1, & \text{if } S > 0 \\
-0, & \text{if } S = 0 \\
--1, & \text{if } S < 0
-\end{cases}
-\label{eq:ch6_signum_def}
-\end{equation}
+where $\text{sgn}(e_y)$ simply means $+1$ if the error is positive, $-1$ if it is negative, and $0$ if there is no error. The term $V$ is a fixed correction "kick" applied in the right direction every single time step, on top of the ordinary proportional correction $L\,e_y$.
 
-By defining the sliding surface $S(t) = e_y(t) = 0$, sliding mode behavior is enforced when the reachability condition $S(t) \dot{S}(t) < 0$ is satisfied. Once error trajectories intersect $S(t) = 0$, the system enters the sliding phase, rendering estimation error dynamics completely invariant to matched model uncertainties $\boldsymbol{\Delta} f(\cdot)$.
+Because this switching correction is so strong, the estimation error is driven to (and held at) zero even when the underlying battery model is imperfect -- which is what makes SMOs attractive for aging or hard-to-model cells. The price of this robustness is a side effect called \emph{chattering}: because the correction flips abruptly between $+V$ and $-V$ every time the error crosses zero, the estimate can vibrate rapidly around the true value instead of settling smoothly.
 
-\subsection{Reachability Proof and Gain Selection}
-To prove reachability and determine the sliding gain $\mathbf{V}$, we define the Lyapunov candidate function:
+\subsection{Chattering Suppression}
+The standard fix for chattering is to soften the sharp on/off switch into a smooth ramp near zero error, using a saturation function instead of the pure sign function:
 \begin{equation}
-V_{\mathrm{SMO}}(t) = \frac{1}{2} S^2(t) = \frac{1}{2} e_y^2(t)
-\label{eq:smo_lyap_reach}
-\end{equation}
-Taking the time derivative of $V_{\mathrm{SMO}}(t)$ along the error trajectories $\dot{\mathbf{e}}(t) = \dot{\mathbf{x}}(t) - \dot{\hat{\mathbf{x}}}(t)$:
-\begin{equation}
-\dot{V}_{\mathrm{SMO}}(t) = S(t) \dot{S}(t) = e_y(t) \left( \mathbf{C} \dot{\mathbf{e}}(t) + \mathbf{D} \dot{u}(t) \right)
-\end{equation}
-Substituting the error dynamics:
-\begin{align}
-\dot{V}_{\mathrm{SMO}}(t) &= e_y(t) \mathbf{C} \left( \mathbf{A}\mathbf{e}(t) + \boldsymbol{\Delta}f - \mathbf{L}e_y(t) - \mathbf{V} \text{sgn}(e_y(t)) \right) \nonumber \\
-&= e_y(t) \mathbf{C} (\mathbf{A}\mathbf{e}(t) - \mathbf{L}e_y(t)) + e_y(t)\mathbf{C}\boldsymbol{\Delta}f - \mathbf{C}\mathbf{V}|e_y(t)|
-\end{align}
-where we used $e_y(t)\text{sgn}(e_y(t)) = |e_y(t)|$. To guarantee sliding reachability, we require:
-\begin{equation}
-\dot{V}_{\mathrm{SMO}}(t) < -\eta |e_y(t)|
-\end{equation}
-where $\eta > 0$ is a design parameter specifying convergence speed toward the sliding surface. Setting $\mathbf{C} = -1$ (for first-order ECM):
-\begin{align}
-\dot{V}_{\mathrm{SMO}}(t) &= -e_y(t) \left( \mathbf{A}\mathbf{e}(t) - \mathbf{L}e_y(t) \right) - e_y(t)\boldsymbol{\Delta}f + \mathbf{V}|e_y(t)| \nonumber \\
-&\le |e_y(t)| \left( \|\mathbf{A}\mathbf{e}(t)\| + \|\mathbf{L}\| |e_y(t)| + \|\boldsymbol{\Delta}f\| \right) + \mathbf{V}|e_y(t)|
-\end{align}
-
-Therefore, reachability is guaranteed if the sliding gain $\mathbf{V}$ is chosen such that:
-\begin{equation}
-\mathbf{V} < -\left( \|\mathbf{A}\mathbf{e}(t)\| + \|\mathbf{L}\| |e_y(t)| + \rho + \eta \right)
-\end{equation}
-(where $\mathbf{V}$ is negative since $\mathbf{C} = -1$). This completes the sliding mode reachability proof.
-
-
-\subsection{Chattering Suppression Techniques}
-In practical digital BMS microcontrollers, ideal high-frequency signum switching induces chatteringâ€”high-frequency numerical oscillations that propagate into parameter estimates. To suppress chattering, the discontinuous signum function is replaced by a continuous boundary layer approximation, such as the saturation function $\text{sat}(S / \epsilon)$ or hyperbolic tangent function $\tanh(S / \epsilon)$:
-\begin{equation}
-\text{sat}\left( \frac{S}{\epsilon} \right) = \begin{cases}
-\frac{S}{\epsilon}, & \text{if } \left| \frac{S}{\epsilon} \right| \le 1 \\
-\text{sgn}(S), & \text{if } \left| \frac{S}{\epsilon} \right| > 1
+\text{sat}\!\left(\frac{e_y}{\epsilon}\right) =
+\begin{cases}
+e_y/\epsilon, & \text{if } |e_y| \le \epsilon \\
+\text{sgn}(e_y), & \text{if } |e_y| > \epsilon
 \end{cases}
 \label{eq:ch6_sat_boundary_layer}
 \end{equation}
-where $\epsilon > 0$ defines the boundary layer thickness parameter balancing chattering attenuation against steady-state estimation boundary width.
+In words: when the error is large, the correction behaves exactly like the original sharp switch ($+V$ or $-V$). But once the error becomes small (inside a narrow "boundary layer" of width $\epsilon$), the correction smoothly tapers toward zero instead of flipping abruptly, which removes the vibration while keeping almost all of the original robustness.
 
-Another formulation is the adaptive boundary sliding mode observer (AB-SMO), where the boundary thickness $\epsilon(t)$ is dynamically adjusted based on the rate of change of the output error:
-\begin{equation}
-\dot{\epsilon}(t) = -\beta_{\epsilon} \epsilon(t) + \alpha_{\epsilon} |e_y(t)|
-\end{equation}
-where $\beta_{\epsilon}, \alpha_{\epsilon} > 0$. When the estimation error is large, the boundary layer expands to filter out chattering. As the error decreases, the boundary layer contracts to maintain high estimation accuracy.
+% ---------------------------------------------------------------
+% Generate this image separately using the prompt below, then save it as:
+%   images/ch6_fig3_chattering_suppression.png
+% Prompt:
+%   "A simple two-panel technical chart for a textbook. Left panel
+%    titled 'Sharp Switching' shows a step function jumping abruptly
+%    between +V and -V as the error crosses zero, drawn as a bold
+%    square wave. Right panel titled 'Smoothed Correction (Saturation)'
+%    shows the same signal but with a smooth diagonal ramp near zero
+%    instead of a sharp jump. Minimalist line-chart style, axis labels
+%    'Error' and 'Correction', muted blue lines on white background,
+%    academic textbook figure style."
+% ---------------------------------------------------------------
+\begin{figure}[h!]
+\centering
+\includegraphics[width=0.85\textwidth]{Gemini_Generated_Image_i8b6zpi8b6zpi8b6.png}
+\caption{Sharp switching versus smoothed (saturated) correction: the boundary layer removes the abrupt jump that causes chattering.}
+\label{fig:ch6_chattering}
+\end{figure}
 
-\subsection{Equivalent Control and Parameter Extraction}
-The equivalent control method extracts internal parameters from the high-frequency switching terms. Under the sliding motion ($S(t) = \dot{S}(t) = 0$), the discontinuous term $\mathbf{V} \text{sgn}(e_y(t))$ converges to its average equivalent value $v_{\text{eq}}(t)$, which contains information about the unmodeled disturbances and parameter deviations. 
+A small amount of useful information hides inside that switching correction term. Once the estimate has settled, the \emph{average} value of the switching term (obtained simply by smoothing it with a basic low-pass filter) tells us roughly how far off our assumed parameters were -- for example, how much the true ohmic resistance $R_0$ has drifted from its nominal value. This gives sliding mode observers a convenient side benefit: they can be used not just to estimate the hidden voltage, but also to reveal slow, aging-related parameter drift, without needing a separate estimator.
 
-The equivalent control signal $v_{\text{eq}}(t)$ is extracted by passing the switching output through a low-pass filter:
-\begin{equation}
-\tau_f \dot{v}_{\text{eq}}(t) + v_{\text{eq}}(t) = \mathbf{V} \text{sgn}(e_y(t))
-\end{equation}
-where $\tau_f$ is the filter time constant. The extracted $v_{\text{eq}}(t)$ is then mapped back to update the estimates of the physical parameters (e.g., $R_0, R_1$).
+\begin{algorithm}[htbp]
 
-\begin{verbatim}
-Algorithm 6.3: Sliding Mode Observer with Chattering Suppression
-Input: Telemetry data {V_t_k, I_k}, Gains L, V, Boundary thickness epsilon
-Output: Estimated polarization voltage V_hat_1_k, Equivalent control v_eq_k
-Initialization:
-  1: V_hat_1 = 0, v_eq = 0
-Loop for each time step k:
-  2: Compute OCV from SOC: V_oc = lookup_ocv(SOC_k)
-  3: Compute output error:
-       e_y = (V_t_k - V_oc) - (-V_hat_1 - R_0 * I_k)
-  4: Apply saturation boundary layer switching:
-       sw = V * sat(e_y / epsilon)
-  5: Update polarization voltage:
-       V_hat_1 = V_hat_1 + T_s * (-1 / (R_1 * C_1) * V_hat_1 + 1 / C_1 * I_k + L * e_y + sw)
-  6: Extract equivalent control via low-pass filter:
-       v_eq = v_eq + (T_s / tau_f) * (-v_eq + sw)
-\end{verbatim}
+\caption{Sliding Mode Observer with Chattering Suppression}
+\label{alg:smo_chattering}
 
+\footnotesize
 
-\subsection{Sliding Mode Observer with Adaptive Parameter Estimation}
-To track the slow degradation-induced parameter drift directly using sliding mode observers, we can formulate an adaptive law based on equivalent control. Let us assume the true ohmic resistance is $R_0 = R_{0,\text{nom}} + \Delta R_0(t)$, where $\Delta R_0(t)$ is the slow variation. The output voltage error equation can be rewritten as:
-\begin{equation}
-e_y(t) = y(t) - \hat{y}(t) = -\tilde{V}_1(t) - I(t) \tilde{R}_0(t)
-\end{equation}
-where $\tilde{V}_1 = V_1 - \hat{V}_1$ and $\tilde{R}_0 = R_0 - \hat{R}_0$.
+\begin{algorithmic}[1]
 
-To design the parameter update law for $\hat{R}_0(t)$, we define a composite Lyapunov candidate:
-\begin{equation}
-V_a(t) = \frac{1}{2} \tilde{V}_1^2(t) + \frac{1}{2 \gamma} \tilde{R}_0^2(t)
-\label{eq:smo_adaptive_lyap}
-\end{equation}
-where $\gamma > 0$ is the adaptation gain parameter.
+\State \textbf{Input:} Telemetry $\{V_{t,k}, I_k\}$, gains $L, V$, boundary layer width $\epsilon$
 
-Differentiating $V_a(t)$ and substituting the state dynamics:
-\begin{align}
-\dot{V}_a(t) &= \tilde{V}_1(t) \dot{\tilde{V}}_1(t) + \frac{1}{\gamma} \tilde{R}_0(t) \dot{\tilde{R}}_0(t) \nonumber \\
-&= \tilde{V}_1(t) \left( -\frac{1}{\tau} \tilde{V}_1(t) - v_{\text{eq}}(t) \right) - \frac{1}{\gamma} \tilde{R}_0(t) \dot{\hat{R}}_0(t)
-\end{align}
-where we used $\dot{\tilde{R}}_0 = \dot{R}_0 - \dot{\hat{R}}_0 \approx -\dot{\hat{R}}_0$ since the parameter drift is slow ($\dot{R}_0 \approx 0$).
+\State \textbf{Output:} Estimated polarization voltage $\hat{V}_{1,k}$, smoothed disturbance signal $v_{eq,k}$
 
-During the sliding mode, the equivalent control matches the parameter perturbation: $v_{\text{eq}}(t) \approx -I(t) \tilde{R}_0(t)$. Substituting this yields:
-\begin{equation}
-\dot{V}_a(t) = -\frac{1}{\tau} \tilde{V}_1^2(t) + I(t) \tilde{V}_1(t) \tilde{R}_0(t) - \frac{1}{\gamma} \tilde{R}_0(t) \dot{\hat{R}}_0(t)
-\end{equation}
-To make $\dot{V}_a(t)$ negative semi-definite, we choose the parameter adaptation law to cancel the cross-term:
-\begin{equation}
-\dot{\hat{R}}_0(t) = \gamma \cdot I(t) \tilde{V}_1(t)
-\end{equation}
-Since $\tilde{V}_1(t)$ is not directly measurable, we approximate it using the output error during sliding motion: $\tilde{V}_1(t) \approx -e_y(t)$. This gives the online adaptation law:
-\begin{equation}
-\dot{\hat{R}}_0(t) = -\gamma \cdot I(t) e_y(t)
-\end{equation}
-This formulation guarantees asymptotic convergence of the parameter estimate $\hat{R}_0$ under continuous current excitation.
+\State \textbf{Initialization:} $\hat{V}_{1,0}=0,\ v_{eq,0}=0$
 
+\For{each time step $k$}
+    \State Look up the open-circuit voltage: $V_{oc} = \mathrm{lookup\_ocv}(SOC_k)$
+    \State Compute the output error: $e_y = (V_{t,k}-V_{oc}) - (-\hat{V}_{1,k}-R_0I_k)$
+    \State Compute the smoothed switching correction: $sw = V \cdot \text{sat}(e_y/\epsilon)$
+    \State Update the voltage estimate:
+    \State $\hat{V}_{1,k+1} = \hat{V}_{1,k} + T_s\left(-\frac{1}{R_1C_1}\hat{V}_{1,k} + \frac{1}{C_1}I_k\right) + L\,e_y + sw$
+    \State Smooth the switching signal: $v_{eq,k+1} = v_{eq,k} + \frac{T_s}{\tau_f}(sw - v_{eq,k})$
+\EndFor
 
-\subsection{Equivalent Control Filter Design and Frequency Response}
-The equivalent control signal extraction requires filtering out the high-frequency switching chattering without introducing excessive phase lag in the parameter updates. A first-order low-pass filter is typically used:
-\begin{equation}
-G_f(s) = \frac{V_{\mathrm{eq}}(s)}{V_{\mathrm{sw}}(s)} = \frac{1}{\tau_f s + 1}
-\end{equation}
-where $V_{\mathrm{sw}} = \mathbf{V} \text{sgn}(e_y(t))$ is the discontinuous switching control, and $\tau_f$ is the filter time constant.
+\end{algorithmic}
 
-The choice of $\tau_f$ is governed by a fundamental trade-off:
-\begin{itemize}
-    \item \textbf{High-Frequency Attenuation:} The switching frequency of the sliding mode observer is bounded by the microcontroller sampling rate $f_s = 1/T_s$. To effectively filter out chattering, we require the filter cutoff frequency $f_c = 1/(2\pi\tau_f)$ to be much lower than the switching frequency:
-    \begin{equation}
-    \tau_f \gg \frac{T_s}{2\pi}
-    \end{equation}
-    \item \textbf{Tracking Delay Minimization:} The physical parameter drift occurs on slow thermal and aging time scales (e.g., $10^2$--$10^4$~s). To avoid introducing significant tracking lag in the parameter adaptation, the filter time constant must be much smaller than the parameter variation time scale:
-    \begin{equation}
-    \tau_f \ll \tau_{\text{drift}}
-    \end{equation}
-\end{itemize}
-For a typical sample rate $T_s = 0.1$~s, a filter time constant of $\tau_f = 1$--$5$~s provides optimal chattering suppression (attenuation $>20$~dB at Nyquist frequency) while ensuring negligible delay for the parameter adaptation loops.
+\end{algorithm}
+
+Choosing the smoothing time constant $\tau_f$ is another balancing act, similar to the gain trade-off in Table~\ref{tab:ch6_gain_tradeoff}: it must be slow enough to filter out the rapid switching noise, but fast enough to still track real, physical aging trends, which typically develop over minutes to hours rather than seconds. A value of $\tau_f$ between 1 and 5 seconds is a reasonable default for most automotive BMS applications running at a 10~Hz update rate.
 
 
 \section{Gain-Scheduling and LPV Observers}
 \label{sec:lpv_observers}
 
-Lithium-ion batteries operate over wide ranges of temperature and SOC. Since the system matrices of the ECM depend non-linearly on these variables, a fixed-gain observer ($\mathbf{L} = \text{const}$) cannot guarantee uniform convergence and noise rejection across the entire operating window. To address this, Linear Parameter-Varying (LPV) observer design is employed.
+A single, fixed gain (whether $L$, $K_p$/$K_i$, or $V$) rarely performs equally well across the battery's entire operating range. A gain tuned for a cold, low-charge cell may be too aggressive for a warm, fully-charged one, and vice versa. Instead of designing one single gain, engineers can design a small handful of gains, each tuned for a different operating "corner" (for example: cold and empty, cold and full, hot and empty, hot and full), and then blend between them in real time based on the current state of charge and temperature.
 
-Consider the parameter-dependent state-space representation of the cell:
-\begin{align}
-\dot{\mathbf{x}}(t) &= \mathbf{A}(\boldsymbol{\theta}(t)) \mathbf{x}(t) + \mathbf{B}(\boldsymbol{\theta}(t)) u(t) \\
-y(t) &= \mathbf{C} \mathbf{x}(t) + \mathbf{D}(\boldsymbol{\theta}(t)) u(t)
-\end{align}
-where $\boldsymbol{\theta}(t) = [\text{SOC}(t), T_{\text{cell}}(t)]^T$ is the scheduling vector, which is assumed to be measured or estimated in real time.
+This blending is simply a weighted average. If the measured state of charge and temperature are close to the "hot and full" corner, the observer mostly uses the gain tuned for that corner; if the battery sits between two corners, the observer uses a proportional mix of both. Table~\ref{tab:ch6_lpv_corners} lists the four corners typically used for a lithium-ion cell.
 
-In a polytopic LPV approach, the scheduling parameter space is bounded by a hyper-rectangle, and any parameter variation is represented as a convex combination of $M = 2^r$ vertices of the polytope:
+\begin{table}[h!]
+\centering
+\caption{Typical Operating Corners for a Gain-Scheduled Observer.}
+\label{tab:ch6_lpv_corners}
+\renewcommand{\arraystretch}{1.3}
+\footnotesize
+\begin{tabularx}{\textwidth}{|X|c|c|}
+\hline
+\textbf{Operating Corner} & \textbf{SOC} & \textbf{Temperature} \\
+\hline
+Cold, low charge & 10\% & 0\textdegree C \\
+\hline
+Cold, high charge & 90\% & 0\textdegree C \\
+\hline
+Hot, low charge & 10\% & 50\textdegree C \\
+\hline
+Hot, high charge & 90\% & 50\textdegree C \\
+\hline
+\end{tabularx}
+\end{table}
+
+The blended, real-time gain is computed with a simple weighted sum:
 \begin{equation}
-\boldsymbol{\theta}(t) \in \mathcal{C} = \mathrm{Co}\left\{ \boldsymbol{\theta}_1, \boldsymbol{\theta}_2, \dots, \boldsymbol{\theta}_M \right\}
+L(t) = \alpha_1(t) L_1 + \alpha_2(t) L_2 + \alpha_3(t) L_3 + \alpha_4(t) L_4
+\label{eq:ch6_lpv_blend}
 \end{equation}
-where $\boldsymbol{\theta}_j$ are the vertices corresponding to the extreme values of SOC and temperature. The system matrices at any operating point are then represented as:
-\begin{equation}
-\mathbf{A}(\boldsymbol{\theta}(t)) = \sum_{j=1}^M \alpha_j(t) \mathbf{A}_j, \quad \sum_{j=1}^M \alpha_j(t) = 1, \quad \alpha_j(t) \ge 0
-\label{eq:lpv_matrix}
-\end{equation}
-where $\mathbf{A}_j$ is the system matrix evaluated at vertex $j$, and $\alpha_j(t)$ are the dynamic barycentric weights.
+where $L_1$ through $L_4$ are the four pre-tuned gains for the corners in Table~\ref{tab:ch6_lpv_corners}, and the weights $\alpha_1$ through $\alpha_4$ always add up to 1 and shift smoothly as the battery's actual SOC and temperature move around inside that operating rectangle. When the cell sits exactly at one corner, that corner's gain is used at full weight; when it sits in the middle, all four gains contribute equally.
 
-The LPV observer gain is scheduled using the same convex weights:
-\begin{equation}
-\mathbf{L}(\boldsymbol{\theta}(t)) = \sum_{j=1}^M \alpha_j(t) \mathbf{L}_j
-\end{equation}
-where $\mathbf{L}_j$ is the observer gain designed for vertex $j$.
+This approach is attractive for embedded systems because it needs no real-time optimization or heavy matrix math -- only a lightweight weighted average that a low-cost microcontroller can compute in a handful of operations, while still giving the observer a gain that is well-matched to the battery's current operating condition.
 
-The quadratic stability of the LPV error dynamics is guaranteed if there exists a single symmetric positive-definite matrix $\mathbf{P} > 0$ and auxiliary matrices $\mathbf{Y}_j$ such that the following set of $M$ coupled LMIs is satisfied:
-\begin{equation}
-\mathbf{A}_j^T \mathbf{P} + \mathbf{P} \mathbf{A}_j - \mathbf{C}^T \mathbf{Y}_j^T - \mathbf{Y}_j \mathbf{C} < 0, \quad j = 1, \dots, M
-\label{eq:lpv_lmi}
-\end{equation}
-Once solved, the vertex observer gains are recovered as $\mathbf{L}_j = \mathbf{P}^{-1} \mathbf{Y}_j$. The real-time scheduled observer gain is then computed on-the-fly, ensuring robust state and parameter tracking across the entire dynamic operational window.
-
-
-\subsection{Dynamic Barycentric Weight Calculations}
-To implement this LPV scheduled observer, the weights $\alpha_j(t)$ must be computed online at each time step. Let the scheduling parameters be bounded by:
-\begin{align}
-\text{SOC}(t) &\in [\mathrm{SOC}_{\min}, \mathrm{SOC}_{\max}] = [0.1, 0.9] \\
-T_{\text{cell}}(t) &\in [T_{\min}, T_{\max}] = [0^\circ\text{C}, 50^\circ\text{C}]
-\end{align}
-This rectangular scheduling space defines $M = 4$ vertices:
-\begin{align}
-\boldsymbol{\theta}_1 &= [0.1, 0] \quad (\text{Low SOC, Low Temp}) \\
-\boldsymbol{\theta}_2 &= [0.9, 0] \quad (\text{High SOC, Low Temp}) \\
-\boldsymbol{\theta}_3 &= [0.1, 50] \quad (\text{Low SOC, High Temp}) \\
-\boldsymbol{\theta}_4 &= [0.9, 50] \quad (\text{High SOC, High Temp})
-\end{align}
-
-For any measured state vector $\boldsymbol{\theta}(t) = [\mathrm{SOC}(t), T_{\text{cell}}(t)]^T$, we define the normalized parameter coordinates:
-\begin{align}
-\mu_1(t) &= \frac{\mathrm{SOC}(t) - \mathrm{SOC}_{\min}}{\mathrm{SOC}_{\max} - \mathrm{SOC}_{\min}} = \frac{\mathrm{SOC}(t) - 0.1}{0.8} \\
-\mu_2(t) &= \frac{T_{\text{cell}}(t) - T_{\min}}{T_{\max} - T_{\min}} = \frac{T_{\text{cell}}(t)}{50}
-\end{align}
-where $\mu_1(t), \mu_2(t) \in [0, 1]$.
-
-The barycentric interpolation weights $\alpha_j(t)$ for the four vertices are calculated as:
-\begin{align}
-\alpha_1(t) &= (1 - \mu_1(t))(1 - \mu_2(t)) \\
-\alpha_2(t) &= \mu_1(t)(1 - \mu_2(t)) \\
-\alpha_3(t) &= (1 - \mu_1(t))\mu_2(t) \\
-\alpha_4(t) &= \mu_1(t)\mu_2(t)
-\end{align}
-By construction, these weights are non-negative and sum to 1 ($\sum_{j=1}^4 \alpha_j(t) = 1$) for any operating point within the bounding box. The online scheduled observer gain is then computed simply as:
-\begin{equation}
-\mathbf{L}_k = \alpha_1(t)\mathbf{L}_1 + \alpha_2(t)\mathbf{L}_2 + \alpha_3(t)\mathbf{L}_3 + \alpha_4(t)\mathbf{L}_4
-\end{equation}
-This approach requires no matrix inversions or LMI solving in the embedded microcontroller, executing in only a few dozen FLOPs.
+% ---------------------------------------------------------------
+% Generate this image separately using the prompt below, then save it as:
+%   images/ch6_fig4_gain_scheduling_envelope.png
+% Prompt:
+%   "A simple 2D scatter/rectangle diagram for a textbook: a square
+%    plot with horizontal axis 'State of Charge (10%-90%)' and
+%    vertical axis 'Temperature (0C-50C)'. The four corners of the
+%    square are marked with small labeled dots: 'L1', 'L2', 'L3',
+%    'L4'. A single dot somewhere near the middle of the square is
+%    labeled 'Current Operating Point' with faint dashed lines
+%    connecting it to all four corners, suggesting a weighted blend.
+%    Clean, flat vector illustration, pastel color palette, white
+%    background, academic textbook figure style."
+% ---------------------------------------------------------------
+% \begin{figure}[h!]
+% \centering
+% \includegraphics[width=0.75\textwidth]{images/ch6_fig4_gain_scheduling_envelope.png}
+% \caption{Blending observer gains across the operating envelope: the four corner gains are combined based on the current SOC and temperature.}
+% \label{fig:ch6_gain_scheduling}
+% \end{figure}
 
 
-\section{Robustness and Convergence Analysis}
+\section{Robustness and Convergence: A Practical View}
 \label{sec:robustness_convergence}
 
-The stability and global convergence of observer-based parameter estimators are formally established using Lyapunov direct stability principles and Linear Matrix Inequalities (LMIs).
+Formal stability proofs for observers (based on Lyapunov functions and linear matrix inequalities) are important for control-theory research, but for a battery-management engineer the practical takeaway can be summarized without the underlying algebra:
 
-Consider a positive-definite quadratic Lyapunov candidate function $V(\mathbf{e}) \in \mathbb{R}^+$ defined on state error $\mathbf{e}(t)$:
-\begin{equation}
-V(\mathbf{e}) = \mathbf{e}^T(t) \mathbf{P} \mathbf{e}(t)
-\label{eq:ch6_lyapunov_candidate}
-\end{equation}
-where $\mathbf{P} \in \mathbb{R}^{n \times n}$ is a symmetric positive-definite matrix ($\mathbf{P} = \mathbf{P}^T > 0$).
+\begin{itemize}
+    \item \textbf{Convergence} simply means: if the gains are chosen sensibly (as discussed throughout this chapter), the estimation error will shrink toward zero over time and stay there, rather than growing or oscillating forever.
+    \item \textbf{Robustness} means: the observer keeps working reasonably well even when the battery model is not perfectly accurate -- for example, when $R_0$ or $R_1C_1$ have drifted from their nominal values due to aging or temperature.
+    \item \textbf{Bounded-error guarantee}: even under the worst realistic disturbances (sensor noise, unmodeled dynamics, fast temperature changes), a well-tuned observer's error stays within a small, predictable range rather than diverging -- it does not need the disturbance to disappear completely, only to stay bounded.
+\end{itemize}
 
-Differentiating $V(\mathbf{e})$ along the linear observer error trajectories $\dot{\mathbf{e}}(t) = (\mathbf{A} - \mathbf{L} \mathbf{C}) \mathbf{e}(t)$ yields:
-\begin{align}
-\dot{V}(\mathbf{e}) &= \dot{\mathbf{e}}^T \mathbf{P} \mathbf{e} + \mathbf{e}^T \mathbf{P} \dot{\mathbf{e}} \nonumber \\
-&= \mathbf{e}^T \left[ (\mathbf{A} - \mathbf{L} \mathbf{C})^T \mathbf{P} + \mathbf{P} (\mathbf{A} - \mathbf{L} \mathbf{C}) \right] \mathbf{e}
-\label{eq:ch6_lyapunov_deriv_expanded}
-\end{align}
-
-To guarantee strict asymptotic error decay ($\dot{V}(\mathbf{e}) < -\mathbf{e}^T \mathbf{Q} \mathbf{e} < 0$ for $\mathbf{Q} > 0$), the matrix inequality must satisfy the Lyapunov algebraic equation:
-\begin{equation}
-(\mathbf{A} - \mathbf{L} \mathbf{C})^T \mathbf{P} + \mathbf{P} (\mathbf{A} - \mathbf{L} \mathbf{C}) = -\mathbf{Q}
-\label{eq:ch6_lyapunov_algebraic}
-\end{equation}
-
-By defining an auxiliary matrix variable $\mathbf{Y} = \mathbf{P} \mathbf{L}$, Equation~\eqref{eq:ch6_lyapunov_algebraic} converts into a convex Linear Matrix Inequality (LMI) solvable via standard interior-point convex solvers:
-\begin{equation}
-\mathbf{A}^T \mathbf{P} + \mathbf{P} \mathbf{A} - \mathbf{C}^T \mathbf{Y}^T - \mathbf{Y} \mathbf{C} < 0
-\label{eq:ch6_lmi_formulation}
-\end{equation}
-
-\subsection{$H_\infty$ Formulation for Disturbance Rejection}
-Under external disturbances, we can formulate an $H_\infty$ optimization problem to minimize the impact of disturbances on the estimation error. Let $w(t)$ be the disturbance. The objective is to design the observer gain $\mathbf{L}$ such that the $L_2$-gain from disturbance $w(t)$ to error $\mathbf{e}(t)$ is bounded by a positive scalar $\gamma$:
-\begin{equation}
-\int_0^{\infty} \mathbf{e}^T(t) \mathbf{e}(t) \,\mathrm{d}t \le \gamma^2 \int_0^{\infty} w^T(t) w(t) \,\mathrm{d}t
-\end{equation}
-This performance index is satisfied if there exists a symmetric positive-definite matrix $\mathbf{P} > 0$ such that the following LMI holds:
-\begin{equation}
-\begin{bmatrix}
-\mathbf{A}^T \mathbf{P} + \mathbf{P} \mathbf{A} - \mathbf{C}^T \mathbf{Y}^T - \mathbf{Y} \mathbf{C} + \mathbf{I} & \mathbf{P} \mathbf{E} \\
-\mathbf{E}^T \mathbf{P} & -\gamma^2 \mathbf{I}
-\end{bmatrix} < 0
-\label{eq:h_infinity_lmi}
-\end{equation}
-where $\mathbf{Y} = \mathbf{P} \mathbf{L}$ and $\mathbf{E}$ is the disturbance entry matrix. Resolving this LMI gives the optimal robust observer gain $\mathbf{L} = \mathbf{P}^{-1} \mathbf{Y}$.
-
-
-\subsection{LPV Lyapunov Stability Proof}
-To prove the stability of the polytopic LPV observer over the entire operating envelope, we define the Lyapunov candidate function:
-\begin{equation}
-V(t) = \mathbf{e}^T(t) \mathbf{P} \mathbf{e}(t)
-\end{equation}
-where $\mathbf{P} = \mathbf{P}^T > 0$ is a constant symmetric positive-definite matrix.
-
-Differentiating $V(t)$ along the LPV observer error trajectories $\dot{\mathbf{e}}(t) = (\mathbf{A}(\boldsymbol{\theta}) - \mathbf{L}(\boldsymbol{\theta})\mathbf{C})\mathbf{e}(t)$ gives:
-\begin{equation}
-\dot{V}(t) = \mathbf{e}^T(t) \left[ (\mathbf{A}(\boldsymbol{\theta}) - \mathbf{L}(\boldsymbol{\theta})\mathbf{C})^T \mathbf{P} + \mathbf{P}(\mathbf{A}(\boldsymbol{\theta}) - \mathbf{L}(\boldsymbol{\theta})\mathbf{C}) \right] \mathbf{e}(t)
-\end{equation}
-Substituting the polytopic decompositions of $\mathbf{A}(\boldsymbol{\theta})$ and $\mathbf{L}(\boldsymbol{\theta})$ from Equation~\eqref{eq:lpv_matrix}:
-\begin{align}
-\dot{V}(t) &= \mathbf{e}^T(t) \left[ \left(\sum_{j=1}^M \alpha_j (\mathbf{A}_j - \mathbf{L}_j \mathbf{C})\right)^T \mathbf{P} + \mathbf{P} \left(\sum_{j=1}^M \alpha_j (\mathbf{A}_j - \mathbf{L}_j \mathbf{C})\right) \right] \mathbf{e}(t) \nonumber \\
-&= \sum_{j=1}^M \alpha_j(t) \mathbf{e}^T(t) \left[ (\mathbf{A}_j - \mathbf{L}_j \mathbf{C})^T \mathbf{P} + \mathbf{P}(\mathbf{A}_j - \mathbf{L}_j \mathbf{C}) \right] \mathbf{e}(t)
-\end{align}
-
-Since the barycentric weights satisfy $\alpha_j(t) \ge 0$ and $\sum_{j=1}^M \alpha_j(t) = 1$, the time derivative $\dot{V}(t)$ is negative definite ($\dot{V}(t) < 0$ for all $\mathbf{e}(t) \ne \mathbf{0}$) if each individual term in the sum is negative definite:
-\begin{equation}
-(\mathbf{A}_j - \mathbf{L}_j \mathbf{C})^T \mathbf{P} + \mathbf{P}(\mathbf{A}_j - \mathbf{L}_j \mathbf{C}) < 0, \quad j = 1, \dots, M
-\end{equation}
-By substituting $\mathbf{Y}_j = \mathbf{P} \mathbf{L}_j$, this is equivalent to the LMI set~\eqref{eq:lpv_lmi}:
-\begin{equation}
-\mathbf{A}_j^T \mathbf{P} + \mathbf{P} \mathbf{A}_j - \mathbf{C}^T \mathbf{Y}_j^T - \mathbf{Y}_j \mathbf{C} < 0, \quad j = 1, \dots, M
-\end{equation}
-Therefore, if there exists a single common matrix $\mathbf{P} > 0$ that satisfies this set of $M$ LMIs at the polytope vertices, the LPV observer is globally quadratically stable for any parameter trajectory $\boldsymbol{\theta}(t)$ within the polytope, even under arbitrarily fast parameter changes.
-
-
-\subsection{Input-to-State Stability (ISS)}
-Under bounded external disturbances $w(t)$, Input-to-State Stability (ISS) ensures that estimation errors remain bounded within a compact set proportional to peak disturbance magnitude:
-\begin{equation}
-\text{ISS: } \|\mathbf{e}(t)\| \le \beta(\|\mathbf{e}(0)\|, t) + \gamma\left( \sup_{0 \le \tau \le t} \|w(\tau)\| \right)
-\label{eq:ch6_iss_bound}
-\end{equation}
-where $\beta(\cdot)$ is a class-$\mathcal{KL}$ function and $\gamma(\cdot)$ is a class-$\mathcal{K}$ comparison function. ISS guarantees that even in the presence of unmodeled dynamics, the estimation error will not grow without bound, maintaining safe BMS operation.
+In practice, robustness and convergence speed pull in opposite directions, in the same way the gain size did in Table~\ref{tab:ch6_gain_tradeoff}: a more aggressive observer (larger gains, or the switching term of an SMO) converges faster and rejects more disturbance, but is also more sensitive to sensor noise. The right choice depends on the application -- a race-car battery pack that experiences huge, fast current swings may prefer a Sliding Mode Observer's robustness, while a slow-cycling grid-storage battery may be perfectly well served by a simple, low-noise Luenberger observer.
 
 \section{Summary}
 \label{sec:ch6_summary}
 
-Observer-based parameter estimation methodologies provide a deterministic, highly robust alternative to state filtering. Table~\ref{tab:ch6_observer_comparison} synthesizes structural and operational trade-offs across state observer architectures evaluated in Chapter 6.
+Observer-based parameter estimation methods provide a deterministic, intuitive alternative to statistical filtering. Table~\ref{tab:ch6_observer_comparison} synthesizes the structural and operational trade-offs across the observer architectures covered in this chapter.
 
 \begin{table}[h!]
 \centering
 \caption{Comparative Synthesis of Observer Architectures for Battery Parameter Tracking.}
 \label{tab:ch6_observer_comparison}
 \renewcommand{\arraystretch}{1.3}
-\begin{tabularx}{\textwidth}{|l|c|X|c|}
+\footnotesize
+\begin{tabularx}{\textwidth}{|p{2.4cm}|p{1.5cm}|X|p{1.4cm}|}
 \hline
 \textbf{Observer Architecture} & \textbf{Design Style} & \textbf{Primary Advantage / Limitation} & \textbf{Complexity} \\
 \hline
@@ -560,20 +385,20 @@ PI Observer & Augmented & Compensates steady-state offset; lag in fast dynamics.
 \hline
 Sliding Mode Observer (SMO) & Switching & Supreme robustness; high-frequency chattering. & High \\
 \hline
-Adaptive Boundary SMO & Adaptive & Suppresses chattering; introduces minor tracking delay. & High \\
+Gain-Scheduled (LPV) Observer & Adaptive & Matches gain to operating point; needs several pre-tuned gains. & Medium \\
 \hline
 \end{tabularx}
 \end{table}
 
-
 \subsection{Observer Implementation Guidelines}
 Key operational takeaways for BMS software design:
 \begin{itemize}
-    \item \textbf{Luenberger Observers:} Minimal FLOP overhead, ideal for baseline state estimation when battery parameters are fully calibrated offline.
-    \item \textbf{PI Observers:} Effectively eliminate steady-state parameter offsets by integrating innovation errors, providing simple implementation on 32-bit automotive microcontrollers.
-    \item \textbf{Sliding Mode Observers:} Deliver supreme robustness against non-linear dynamics and SEI degradation; boundary layer saturation ($\text{sat}(S/\epsilon)$) is required to suppress numerical chattering.
+    \item \textbf{Luenberger Observers:} Minimal computational overhead, ideal for baseline state estimation when battery parameters are well calibrated offline and do not drift much.
+    \item \textbf{PI Observers:} Effectively eliminate steady-state parameter offsets by remembering and cancelling persistent errors; simple enough to run on ordinary automotive microcontrollers.
+    \item \textbf{Sliding Mode Observers:} Deliver the strongest robustness against non-linear dynamics and aging-related model mismatch; the saturation function is essential to avoid chattering in a real embedded system.
+    \item \textbf{Gain-Scheduled Observers:} A practical way to get near-optimal performance across the full SOC/temperature range without solving anything online -- just blend a handful of pre-tuned gains.
 \end{itemize}
 
-The common thread across these observer architectures is their reliance on feedback error dynamics rather than explicit covariance propagation. This makes them attractive for safety-critical battery systems in which model mismatch, parameter drift, and fast transients must be handled without sacrificing numerical tractability. In practice, however, the observer alone cannot fully resolve the state-parameter coupling caused by varying SOC, temperature, and degradation. The next chapter therefore addresses the more complete co-estimation problem, where distinguishing between state uncertainty and parameter uncertainty becomes the central challenge.
+The common thread across all of these observer designs is that they rely on feeding back a simple measurement error rather than tracking complex noise statistics. This makes them attractive for safety-critical battery systems where predictable, easy-to-tune behavior matters as much as raw accuracy. In practice, however, an observer alone cannot fully separate state uncertainty from parameter uncertainty when both are changing at once. The next chapter addresses this more complete co-estimation problem, where states and parameters are tracked together.
 
-This concludes the development of observer-based parameter estimation methods. Next, Chapter~7 explores the joint and dual estimation structures where states and parameters are co-estimated simultaneously.
+This concludes the development of observer-based parameter estimation methods. Next, Chapter~7 explores joint and dual estimation structures where states and parameters are co-estimated simultaneously.

@@ -1,0 +1,252 @@
+% ============================================================
+% CHAPTER 10 — PHYSICAL PLANT MODELING IN SIMULINK
+% Parameter Estimation Techniques for Lithium-Ion Batteries
+% ============================================================
+
+\chapter{Physical Plant Modeling in Simulink}
+\label{ch:simulink_plant}
+
+\section{Introduction to Modeling Approaches}
+\label{sec:10_intro}
+
+The preceding chapters treated parameter identification largely as a signal-processing problem: given a record of current, voltage, and temperature, recover the coefficients of an equivalent circuit or an observer gain that best explains the data. This chapter addresses the complementary problem of \emph{producing} that data in a controlled, repeatable, and instrumented setting before any embedded estimator is exposed to a physical cell or to a full vehicle test bench. 
+
+The physical plant model built in this chapter is not the identification algorithm; it is the surrogate battery against which offline and online identification routines from Chapters~4 through~9 are exercised, tuned, and stress-tested. Furthermore, generating high-fidelity synthetic data is a prerequisite for training advanced data-driven estimators, such as Physics-Informed Neural Networks (PINNs) that map thermal and electrical states, prior to hardware deployment. The distinction matters throughout the chapter: the \emph{equivalent circuit model (ECM)} described in Chapter~2 supplies the mathematical structure of the plant, while the \emph{Simulink implementation} described here supplies the numerical environment, current excitation, sensor emulation, and thermal coupling required to generate realistic terminal measurements.
+
+Three considerations motivate carrying out this step in Simulink specifically, rather than in a plain MATLAB script or a lower-level Simscape physical-network description. First, block-diagram simulation exposes the signal-flow structure of the plant explicitly, which is convenient both for pedagogical purposes and for later insertion of an estimator block operating in parallel. Second, Simulink's fixed-step discrete solvers allow the plant to be executed at the same sample rate as an embedded battery management system (BMS). Third, the block library approach scales naturally from a single RC branch (Section~\ref{sec:10_2}) to coupled electro-thermal representations (Section~\ref{sec:10_3_2}) without requiring a change of simulation paradigm.
+
+\subsection{The Plant Model as a Distinct Entity from the Identification Model}
+
+A recurring source of confusion in battery systems engineering is the conflation of the plant with the model used to identify it. In this report, the two are kept deliberately separate:
+
+\begin{itemize}
+    \item The \textbf{plant} is the Simulink subsystem intended to stand in for the physical cell. It is parameterized once, from a reference dataset or high-fidelity literature source, and is thereafter treated as ``ground truth.''
+    \item The \textbf{identification model} is the structure (for example, an Extended Kalman Filter, an R-GCN, or a PINN) that observes the plant's terminal voltage and current and attempts to recover the plant's parameters, possibly under a different or deliberately mismatched structural assumption.
+\end{itemize}
+
+This separation allows a controlled study of structural mismatch, noise sensitivity, and convergence behavior. Committing an ``inverse crime''—using the exact same equations and noise-free conditions to generate and recover data—creates a false sense of algorithmic robustness. 
+
+\subsection{Chapter Roadmap}
+
+Section~\ref{sec:10_1} develops the top-level simulation architecture: the current-source excitation, the SOC integrator, and the noise injection stage. Section~\ref{sec:10_2} works through the parameterization of a first-order Thevenin plant in detail, including the discretization of the RC branch, hysteresis considerations, and lookup table implementation. Section~\ref{sec:10_3} builds the excitation side of the plant using the Dynamic Stress Test (DST) framework. Section~\ref{sec:10_4} summarizes the chapter and connects the plant model to the Software-in-the-Loop validation.
+
+% ============================================================
+\section{Simulating the Battery Environment}
+\label{sec:10_1}
+
+\subsection{Top-Level Architecture}
+
+The plant model is organized as four coupled subsystems: an excitation subsystem that supplies a current reference $i(t)$; an electrical subsystem that maps $i(t)$ and the present state of charge onto a terminal voltage $V_t(t)$; a state-of-charge integrator via coulomb counting; and a thermal subsystem that accepts the dissipated power and returns a cell temperature. A fifth, non-physical block injects sensor noise and quantization.
+
+This layered architecture ensures every quantity that depends algebraically on SOC (open-circuit voltage, resistances, capacitances) is computed from the integrator output rather than fed back through an implicit loop. This strictly avoids algebraic loops, keeping the model compatible with both variable-step and fixed-step discrete solvers.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparison of plant-modeling platforms available within the MATLAB/Simulink ecosystem.}
+\label{tab:10_platforms}
+\renewcommand{\arraystretch}{1.3} % Adds vertical padding
+\begin{tabularx}{\textwidth}{@{}l X X@{}}
+\toprule
+\textbf{Platform} & \textbf{Strengths} & \textbf{Limitations} \\
+\midrule
+Plain MATLAB script & Full transparency of every computation; trivial to vectorize for Monte Carlo studies; fast batch processing. & No native block-diagram reuse; harder to sync with a discrete BMS control loop; manual solver step sizing. \\
+Simulink block diagram & Modular signal flow; native discrete solvers matching embedded sample rates; easy SIL testing. & Higher per-step overhead; care required to avoid unintended algebraic loops in nonlinear tables. \\
+Simscape Electrical & Automatically enforces conservation laws; excellent for multi-cell packs and thermal networks. & Acausal solver can be slower for single-cell studies; physical-network formulation is less transparent for state-space teaching. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Solver Selection and Configuration}
+
+Two practical choices strongly affect whether a Simulink plant is fit for identification studies: solver type and step size. A fixed-step discrete solver (such as \texttt{ode3} or Simulink's \texttt{discrete} solver) operating at the sample interval $\Delta t$ is preferred over a variable-step continuous solver (like \texttt{ode45}). It avoids solver-dependent artifacts where an adaptive step size silently refines its resolution around a current step edge, producing transient behavior invisible to a real digital controller.
+
+The step size must be chosen relative to the fastest time constant retained in the electrical subsystem. For a first-order Thevenin branch with polarization resistance $R_1$ and capacitance $C_1$, the branch time constant is $\tau_1 = R_1 C_1$, leading to the heuristic:
+\begin{equation}
+\Delta t \le \frac{\tau_{1,\min}}{5}
+\label{eq:10_step_rule}
+\end{equation}
+where $\tau_{1,\min}$ is the smallest branch time constant observed across the SOC and temperature operating range. 
+
+% ============================================================
+\section{First-Order Thevenin Parameterization}
+\label{sec:10_2}
+
+\subsection{Governing Equations}
+
+The plant developed in this section follows the first-order Thevenin structure. Under the sign convention in which discharge current is taken as positive, the continuous-time state equation for the single RC (polarization) branch is:
+\begin{equation}
+\frac{dU_1}{dt} = -\frac{U_1}{R_1 C_1} + \frac{i(t)}{C_1}
+\label{eq:10_rc_state}
+\end{equation}
+and the terminal voltage is obtained from Kirchhoff's voltage law as:
+\begin{equation}
+V_t(t) = V_{oc}\big(z(t), T(t)\big) - U_1(t) - i(t) R_0\big(z(t), T(t)\big)
+\label{eq:10_terminal}
+\end{equation}
+where $U_1$ is the voltage across the polarization branch, $R_0$ is the ohmic resistance, $R_1$ and $C_1$ are the polarization resistance and capacitance, $V_{oc}$ is the open-circuit voltage, $z(t)$ is the state of charge, and $T(t)$ is the cell temperature. 
+
+\begin{figure}[htbp]
+\centering
+% TIKZ CODE FOR CIRCUIT
+\begin{circuitikz}[scale=1.2, transform shape]
+    % Voltage source (Voc)
+    \draw (0,0) to[battery1, l=$V_{oc}(z{,}T)$] (0,3);
+    % Ohmic resistance
+    \draw (0,3) to[R, l=$R_0(z{,}T)$, i=$i(t)$] (3,3);
+    % RC Branch
+    \draw (3,3) -- (4,3);
+    \draw (4,3) to[R, l=$R_1$] (4,1.5) -- (4,0);
+    \draw (3,3) -- (5,3);
+    \draw (5,3) to[C, l=$C_1$] (5,1.5) -- (5,0);
+    \draw (4,0) -- (3,0);
+    \draw (5,0) -- (4,0);
+    % Terminals
+    \draw (5,3) -- (6.5,3) node[ocirc, label=above:$+$]{};
+    \draw (0,0) -- (6.5,0) node[ocirc, label=below:$-$]{};
+    % Terminal Voltage Label
+    \draw[<->, >=stealth] (6.5,2.8) -- (6.5,0.2) node[midway, fill=white] {$V_t(t)$};
+    % Branch Voltage Label
+    \draw[<->, >=stealth] (3.6,2.8) -- (3.6,0.2) node[midway, fill=white] {$U_1(t)$};
+\end{circuitikz}
+\caption{First-order Thevenin equivalent circuit model forming the basis of the electrical subsystem.}
+\label{fig:10_thevenin}
+\end{figure}
+
+State of charge evolves by coulomb counting:
+\begin{equation}
+\frac{dz}{dt} = -\frac{\eta \, i(t)}{Q_n}
+\label{eq:10_soc}
+\end{equation}
+with $Q_n$ the nominal capacity and $\eta$ a coulombic efficiency factor.
+
+\subsection{Discrete-Time Implementation}
+
+Because the Simulink plant is executed with a fixed-step discrete solver, equation \eqref{eq:10_rc_state} is discretized exactly, treating the input current as piecewise constant over each sample interval (a zero-order-hold assumption):
+\begin{equation}
+U_{1,k+1} = e^{-\Delta t / \tau_1} \, U_{1,k} + R_1\left(1 - e^{-\Delta t/\tau_1}\right) i_k, \qquad \tau_1 = R_1 C_1
+\label{eq:10_rc_discrete}
+\end{equation}
+The state-of-charge integrator is discretized identically:
+\begin{equation}
+z_{k+1} = z_k - \frac{\eta \, \Delta t}{Q_n} \, i_k .
+\label{eq:10_soc_discrete}
+\end{equation}
+
+\subsection{Embedding SOC-Dependent Parameters}
+
+$V_{oc}$, $R_0$, $R_1$, and $C_1$ are all functions of SOC and temperature. Two implementation strategies are in common use and are compared in Table~\ref{tab:10_lookup_vs_poly}.
+
+\begin{table}[htbp]
+\centering
+\caption{Table-based versus polynomial implementation of SOC-dependent ECM parameters in Simulink.}
+\label{tab:10_lookup_vs_poly}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}l X X@{}}
+\toprule
+\textbf{Criterion} & \textbf{Lookup table (1-D/2-D)} & \textbf{Polynomial curve-fit} \\
+\midrule
+Fidelity near extremes & Preserves sharp measured transitions if grid is dense enough. & Can smooth over genuine nonlinearities unless high order is used. \\
+Extrapolation & Clamped outside grid range; must be guarded explicitly. & Extrapolates automatically, but with potentially non-physical values. \\
+Run-time cost & One interpolation lookup per parameter per step. & One polynomial evaluation per parameter per step. \\
+Traceability & Directly traceable to individual HPPC measurements. & Coefficients are derived; individual points are not directly recoverable. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Illustrative parameters for an NMC~811/graphite cell at 1C discharge rate. (Source: Barletta et al. \cite{barletta2022})}
+\label{tab:10_barletta}
+\begin{tabular}{ccccc}
+\toprule
+SOC (\%) & $V_{oc}$ (V) & $R_0$ (m$\Omega$) & $R_1$ (m$\Omega$) & $C_1$ (kF) \\
+\midrule
+20  & 3.853 & 9.143 & 0.472 & 58.55 \\
+60  & 3.979 & 6.112 & 0.399 & 68.25 \\
+100 & 4.157 & 2.315 & 0.201 & 290.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{Dynamic Stress Testing Framework}
+\label{sec:10_3}
+
+\subsection{Purpose and Provenance of the DST Profile}
+
+While HPPC tests characterize parameters at quasi-static SOC points, the Dynamic Stress Test (DST) exercises the parameterized model under conditions resembling a vehicle drive cycle. The DST originates from the USABC/PNGV manuals, derived from the Simplified Federal Urban Driving Schedule (SFUDS). 
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Distinguishing features of the principal excitation profiles.}
+\label{tab:10_profiles}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X l@{}}
+\toprule
+\textbf{Profile} & \textbf{Primary Use} & \textbf{Excitation Character} & \textbf{Source} \\
+\midrule
+HPPC & Quasi-static char. & Discrete pulses at rest. & USABC/FreedomCAR \\
+DST & Dynamic ID \& validation & Variable-power micro-cycle. & USABC/PNGV \\
+FUDS & Out-of-sample validation & Recorded drive trace. & Federal standards \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{High-Current Stress and Thermal Boundary Mapping}
+\label{sec:10_3_2}
+
+The high-magnitude pulses in a DST profile produce non-negligible self-heating. The heat generation rate is computed using the Bernardi energy-balance form, decomposing total heat into an irreversible (Joule) term and a reversible (entropic) term:
+\begin{equation}
+\dot Q(t) = i(t)^2 \Big[R_0(z,T) + R_1(z,T)\Big] \;-\; i(t)\, T(t) \, \frac{\partial V_{oc}}{\partial T}
+\label{eq:10_bernardi}
+\end{equation}
+
+\begin{algorithm}[htbp]
+\caption{Simulated thermal boundary mapping using the coupled plant}
+\label{alg:10_boundary_map}
+\begin{algorithmic}[1]
+\State \textbf{Inputs:} Candidate current magnitudes $\{i_1,\dots,i_m\}$; candidate pulse durations $\{d_1,\dots,d_n\}$; ambient temperatures $\{T_{a,1},\dots,T_{a,p}\}$; max temperature rise $\Delta T_{lim}$.
+\State \textbf{Outputs:} Map of simulated temp rise $\Delta T(i, d, T_a)$; boundary current $i_{lim}(d, T_a)$.
+\For{each ambient temperature $T_{a,k}$}
+    \State Initialize plant at a fixed reference SOC and set $T(0) = T_{a,k}$
+    \For{each pulse duration $d_j$}
+        \For{each current magnitude $i_\ell$}
+            \State Apply discharge pulse of magnitude $i_\ell$ for duration $d_j$.
+            \State Log $\Delta T = T(d_j) - T_{a,k}$ from the thermal subsystem.
+            \State Record $\dot Q(t)$ from equation \eqref{eq:10_bernardi} for diagnostics.
+        \EndFor
+        \State Interpolate across $\{i_\ell\}$ to estimate $i_{lim}(d_j, T_{a,k})$ such that $\Delta T = \Delta T_{lim}$.
+    \EndFor
+\EndFor
+\State \Return tabulated map $\Delta T$ and boundary curve $i_{lim}$
+\end{algorithmic}
+\end{algorithm}
+
+% ============================================================
+\section{Summary}
+\label{sec:10_4}
+
+This chapter converted the equivalent circuit structures and offline characterization procedures into an executable Simulink plant. The plant was organized around a clean separation between excitation, electrical, state-of-charge, and thermal subsystems. The use of strict zero-order-hold discretization and deliberate algebraic loop avoidance ensures the plant runs robustly alongside complex digital observers, paving the way for testing advanced architectures like adaptive filters or Physics-Informed Neural Networks (PINNs) in subsequent Software-in-the-Loop implementations.
+
+% ============================================================
+% AI IMAGE GENERATION PROMPTS
+% ============================================================
+% If you wish to include realistic visualizations, use the following 
+% prompts in an AI image generator (like Midjourney or DALL-E 3):
+%
+% PROMPT 1 (For Section 10.1 - Hardware representation):
+% "A photorealistic macro shot of a cylindrical lithium-ion battery 
+% connected to a high-end laboratory testing rig. Thick copper wires 
+% with precise sensory clamps are attached to the battery terminals. 
+% The background features out-of-focus digital screens displaying 
+% real-time data charts and Simulink block diagrams. Studio lighting, 
+% high technological aesthetic."
+%
+% PROMPT 2 (For Section 10.3 - Thermal Stress):
+% "A scientific thermal imaging (FLIR style) photograph of a 
+% lithium-ion battery pack undergoing a high-current stress test. 
+% The battery cells glow in gradients of bright yellow and red, 
+% indicating heat generation, against a dark blue background. High 
+% contrast, technical and scientific visual style."
+% ============================================================
